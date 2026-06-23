@@ -20,6 +20,9 @@
 
 由测试 agent 统筹测试流程各节点的 agent，并负责与产品 agent、研发 agent 通信——以此模拟现实场景中测试人员同样需要频繁与产品、研发沟通核对需求的协作过程。
 
+## 详细设计方案
+https://github.com/linchao001/testerAgent/wiki/TesterAgent-%E8%AF%A6%E7%BB%86%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88
+
 ## 代码仓库
 
 基于Qwenpaw二次开发：https://github.com/linchao001/QwenPaw
