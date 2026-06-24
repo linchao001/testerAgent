@@ -28,4 +28,4 @@ https://github.com/linchao001/testerAgent/wiki/TesterAgent-%E8%AF%A6%E7%BB%86%E8
 基于Qwenpaw二次开发：https://github.com/linchao001/QwenPaw
 
 
-<img width="2258" height="1072" alt="image" src="https://github.com/user-attachments/assets/90c84411-5dec-4d88-bf11-8f284c3c21a1" />
+
