@@ -28,7 +28,7 @@
 基于Qwenpaw二次开发：https://github.com/linchao001/QwenPaw
 
 ## 文档
-知识库：https://github.com/linchao001/testerAgent/wiki/%E7%9F%A5%E8%AF%86%E5%BA%93
+知识库工作指引：https://github.com/linchao001/testerAgent/wiki/%E7%9F%A5%E8%AF%86%E5%BA%93
 
 
 
