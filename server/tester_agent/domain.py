@@ -311,3 +311,40 @@ class DegradedStep(BaseModel):
     step: str
     reason: str
     fallback: str
+
+
+# ---------- §2.9 回退影响面（§11.2 输入输出契约） ----------
+
+
+class IdChange(BaseModel):
+    """单个 ID 对象的变更记录（link/story/point）。"""
+
+    id: str
+    kind: Literal["link", "story", "point"]
+    fields_changed: list[str]  # 变化字段名，用于 affected/unaffected 判定
+
+
+class StageImpact(BaseModel):
+    """单个下游阶段的影响面。"""
+
+    stage: str
+    affected_ids: list[str] = []
+    unaffected_ids: list[str] = []
+    added_ids: list[str] = []
+    removed_ids: list[str] = []
+
+
+class ImpactAnalysis(BaseModel):
+    """回退影响面分析结果（dd §11.2）。"""
+
+    target_stage: str
+    link_changes: list[IdChange] = []
+    story_changes: list[IdChange] = []
+    point_changes: list[IdChange] = []
+    downstream: list[StageImpact] = []
+    affected_point_ids: list[str] = []  # 直达 case 作废判定的汇总
+    summary: str = ""  # 给前端 ImpactPreview 的一句话
+
+    def affected_points(self) -> list[str]:
+        """受影响的 point_id 集合（case 作废判定用）。"""
+        return list(dict.fromkeys(self.affected_point_ids))

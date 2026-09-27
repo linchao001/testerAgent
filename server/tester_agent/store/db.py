@@ -18,7 +18,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..logging_config import get_logger
@@ -83,6 +83,12 @@ class ExecResult:
 def utcnow_iso() -> str:
     """统一 UTC ISO-8601（毫秒，Z 后缀）时间戳。"""
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def iso_ago(seconds: float) -> str:
+    """距今 ``seconds`` 秒前的 UTC ISO-8601 时间戳（Reaper/保留期 cutoff 用）。"""
+    past = datetime.now(timezone.utc) - timedelta(seconds=float(seconds))
+    return past.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _apply_pragmas(conn: sqlite3.Connection) -> None:

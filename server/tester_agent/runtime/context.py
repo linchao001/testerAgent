@@ -1,8 +1,8 @@
 """运行时上下文（dd §6.1）：AppContext 进程组合根 / TaskContext 单次图运行依赖包。
 
 - AppContext：FastAPI lifespan 构造的进程内唯一组合根；WP-12 先落检索管线
-  消费面，build_graph 已在 WP-15 落地，GraphRegistry/EventBus/TaskRegistry
-  随 WP-22/21 接线；
+  消费面，build_graph 在 WP-15 落地，EventBus（WP-21）与 GraphRegistry/
+  TaskRegistry/Runner（WP-22）已接线（完整启停序列在 WP-23）；
 - TaskContext：Runner 在 run 启动时构造、wrap() 注入每个节点；检索管线
   （WP-12）仅消费其检索面字段（task/run_id/files/reader/snapshot_level/mirror）。
 """
@@ -19,6 +19,7 @@ from ..store.db import Database
 from ..store.models import (
     ArtifactDAO,
     ConfigDAO,
+    EventDAO,
     MessageDAO,
     TaskDAO,
     TaskRow,
@@ -28,7 +29,10 @@ from ..store.models import (
 from ..store.workspace_files import FileStore
 
 if TYPE_CHECKING:
+    from ..graph.registry import GraphRegistry
     from ..graph.retrieval.cache import RetrievalCache
+    from ..runtime.runner import TaskRegistry
+    from .bus import EventBus
 
 
 def _default_retrieval_cache() -> "RetrievalCache":
@@ -42,11 +46,11 @@ def _default_retrieval_cache() -> "RetrievalCache":
 class AppContext:
     """进程内唯一组合根（dd §6.1）。
 
-    与冻结字段的偏离（WP-12 交接单登记）：graphs/bus/registry 尚未落地
-    （GraphRegistry 与 Runner 同在 WP-22、EventBus WP-21），暂以 Any 占位；
-    WP-15 已交付 build_graph 工厂，Registry 是其薄封装；``retrieval_cache``
-    为 §8.5 进程级 LRU 的组合根接线点（dd §6.1 字段表未列；默认工厂构造，
-    进程内唯一，WP-22 前的调用方也可显式注入做隔离测试）。
+    与冻结字段的偏离（交接单登记）：WP-15 已交付 build_graph 工厂，
+    GraphRegistry（WP-22）是其薄封装并持有生产图；EventBus（WP-21）与
+    TaskRegistry/Runner（WP-22）已接线；``retrieval_cache`` 为 §8.5 进程级
+    LRU 的组合根接线点（dd §6.1 字段表未列；默认工厂构造，进程内唯一，
+    调用方也可显式注入做隔离测试）。
     """
 
     db: Database
@@ -54,9 +58,9 @@ class AppContext:
     llm: LLMClient
     reme_factory: ReMeReaderFactory
     config: ConfigDAO
-    graphs: Any = None  # GraphRegistry — WP-22（WP-15 已落 build_graph 工厂）
-    bus: Any = None  # EventBus — WP-21
-    registry: Any = None  # TaskRegistry — WP-22
+    graphs: "GraphRegistry | None" = None  # WP-22：生产图注册表
+    bus: "EventBus | None" = None  # WP-21
+    registry: "TaskRegistry | None" = None  # WP-22：任务运行锁注册表
     retrieval_cache: "RetrievalCache" = field(default_factory=_default_retrieval_cache)
 
 
@@ -76,6 +80,7 @@ class DAOs:
     artifact: ArtifactDAO | None = None
     testcase: "TestcaseDAO | None" = None
     trace: "TraceDAO | None" = None
+    event: "EventDAO | None" = None  # WP-21：EventBus 落库与 SSE 回放数据源
 
 
 @dataclass

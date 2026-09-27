@@ -412,6 +412,40 @@ class TaskDAO:
             row_cls=TaskRow,
         )
 
+    _ACTIVE_STATUSES = ("running", "waiting_confirm", "waiting_input", "cancelling")
+
+    async def count_active_by_workspace(self, workspace_id: str) -> int:
+        """工作区活跃任务数（WP-25 增量方法，非 dd §3.3 冻结签名）。
+
+        供 DELETE /workspaces/{id} 软删守卫（tech-design §5.1"需确认无活跃任务"）；
+        活跃 = running/waiting_confirm/waiting_input/cancelling（含"已建未启动"
+        的 waiting_input，语义上仍可能被启动）。
+        """
+        placeholders = ",".join("?" * len(self._ACTIVE_STATUSES))
+        row = await self._db.aquery_one(
+            f"SELECT COUNT(*) AS n FROM task "
+            f"WHERE workspace_id = ? AND status IN ({placeholders})",
+            [workspace_id, *self._ACTIVE_STATUSES],
+        )
+        return int(row["n"])
+
+    async def list_by_conversation(
+        self, conversation_id: str, *, cursor: str | None, limit: int
+    ) -> Page[TaskRow]:
+        """会话维度任务列表（WP-25 增量方法，供 GET /conversations/{id} 详情）。
+
+        分页口径与其余 DAO 一致：(created_at, id) 倒序键集分页。
+        """
+        return await _fetch_page(
+            self._db,
+            "SELECT " + self._COLUMNS + " FROM task WHERE conversation_id = ?",
+            [conversation_id],
+            ts_col="created_at",
+            limit=limit,
+            cursor=cursor,
+            row_cls=TaskRow,
+        )
+
     async def update_status(
         self,
         task_id: str,
@@ -507,6 +541,15 @@ class TaskDAO:
         if res.rowcount == 0:
             raise NotFoundError(f"任务不存在：{task_id}")
 
+    @staticmethod
+    def run_seq(thread_id: str) -> int:
+        """从 langgraph_thread_id 推算下一个 run 序号（dd §11.2）。
+
+        线程名形如 ``{base}`` 或 ``{base}::run{n}``；新 run 序号 = 已有
+        ``::run`` 出现次数 + 1。如 ``th-1`` → 1，``th-1::run1`` → 2。
+        """
+        return thread_id.count("::run") + 1
+
 
 # ---------- ArtifactDAO ----------
 
@@ -601,6 +644,71 @@ class ArtifactDAO:
             [task_id, graph_run_id, *stages],
         )
         return res.rowcount
+
+    async def inherit_to_run(
+        self, artifact_id: str, new_run: str, from_run: str
+    ) -> None:
+        """把 unaffected 产物改挂新 run 并留痕（dd §11.2 继承）。
+
+        - graph_run_id → new_run，status 保持 active；
+        - payload 写入 ``inherited_from_run`` 记录来源 run（不覆盖已有字段）；
+        - review_status/confirmed_by 等列原样保留。
+        调用方须包在 immediate_tx 内。
+        """
+        row = await self._db.aquery_one(
+            "SELECT payload FROM stage_artifact WHERE id = ?", (artifact_id,)
+        )
+        if row is None:
+            raise NotFoundError(f"阶段产物不存在：{artifact_id}")
+        payload = _loads(row["payload"], {})
+        if not isinstance(payload, dict):
+            payload = {}
+        if "inherited_from_run" not in payload:
+            payload["inherited_from_run"] = from_run
+        res = await self._db.aexecute(
+            "UPDATE stage_artifact SET graph_run_id = ?, payload = ? WHERE id = ?",
+            (new_run, _dumps(payload), artifact_id),
+        )
+        if res.rowcount == 0:
+            raise NotFoundError(f"阶段产物不存在：{artifact_id}")
+
+    async def superseded_and_obsolete(
+        self,
+        task_id: str,
+        *,
+        from_stage: str,
+        downstream: list,
+        new_run: str,
+    ) -> dict[str, str]:
+        """回退落账：处理目标阶段之后的全部 active 产物（dd §11.2）。
+
+        :param downstream: list[StageImpact]，每项含 stage/affected_ids/
+            unaffected_ids；
+        :return: ``{stage: action}`` 行动记（superseded / inherited / skipped），
+            供回退消息留痕。
+
+        规则（调用方持 immediate_tx）：
+        - 阶段无 active 产物 → skipped；
+        - affected_ids 为空 → 全部 unaffected：``inherit_to_run``（graph_run_id
+          改挂 new_run、payload 写 inherited_from_run，status 保持 active）；
+        - affected_ids 非空 → 存在受影响项：``supersede``（节点重跑时重建）。
+        """
+        actions: dict[str, str] = {}
+        for si in downstream:
+            stage = si.stage
+            if stage == from_stage:
+                continue
+            art = await self.get_active(task_id, stage)
+            if art is None:
+                actions[stage] = "skipped"
+                continue
+            if si.affected_ids:
+                await self.supersede(art.id)
+                actions[stage] = "superseded"
+            else:
+                await self.inherit_to_run(art.id, new_run, art.graph_run_id)
+                actions[stage] = "inherited"
+        return actions
 
     async def next_version(self, task_id: str, stage: str) -> int:
         """下一版本号 = MAX(stage_version)+1（含 superseded/obsolete，版本单调不复用）。
@@ -829,6 +937,25 @@ class TestcaseDAO:
             f"WHERE task_id = ? AND status = 'active' "
             f"AND stage_version IN ({placeholders})",
             [utcnow_iso(), task_id, *(int(v) for v in versions)],
+        )
+        return res.rowcount
+
+    async def mark_obsolete_by_points(
+        self, task_id: str, affected_point_ids: list[str]
+    ) -> int:
+        """回退落账：把受影响 point 的 active 用例置 obsolete（dd §11.2）。
+
+        unaffected point 的用例保持 active（继承）；孤儿文件留盘由保留期清理。
+        调用方须包在 immediate_tx 内。返回受影响行数。
+        """
+        if not affected_point_ids:
+            return 0
+        placeholders = ",".join("?" for _ in affected_point_ids)
+        res = await self._db.aexecute(
+            f"UPDATE testcase SET status = 'obsolete', updated_at = ? "
+            f"WHERE task_id = ? AND status = 'active' "
+            f"AND point_id IN ({placeholders})",
+            [utcnow_iso(), task_id, *affected_point_ids],
         )
         return res.rowcount
 
@@ -1610,6 +1737,13 @@ class SnapshotDAO:
             raise NotFoundError(f"快照不存在：{snapshot_id}")
         return SnapshotRow.from_row(row)
 
+    async def purge_before(self, before: str) -> int:
+        """惰性清理 created_at < before 的快照（保留期 snapshots_days，dd §6.5）。"""
+        res = await self._db.aexecute(
+            "DELETE FROM context_snapshot WHERE created_at < ?", (before,)
+        )
+        return res.rowcount
+
 
 # ---------- task_event ----------
 
@@ -1892,6 +2026,15 @@ class ProposalDAO:
         )
         if res.rowcount == 0:
             raise NotFoundError(f"知识库提案不存在：{proposal_id}")
+
+    async def purge_terminal_before(self, before: str) -> int:
+        """惰性清理 created_at < before 的**终态**提案（status != 'pending'，
+        保留期 proposals_days，dd §6.5）；pending 提案可能仍在等用户确认，不删。"""
+        res = await self._db.aexecute(
+            "DELETE FROM kb_proposal WHERE created_at < ? AND status != 'pending'",
+            (before,),
+        )
+        return res.rowcount
 
 
 # ---------- config（单行 id=1） ----------
