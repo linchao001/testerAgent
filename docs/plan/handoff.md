@@ -45,8 +45,8 @@
 | WP-16 | intake 条款切分 | M | done | 2026-09-27 | §3 记录区 [WP-16] |
 | WP-17 | link_identify | S | done | 2026-09-27 | §3 记录区 [WP-17] |
 | WP-18 | 批次执行器 + point_write | M | done | 2026-09-27 | §3 记录区 [WP-18] |
-| WP-19 | case_generate + 提交协议 | M | todo | | — |
-| WP-20 | coverage_check | S | todo | | — |
+| WP-19 | case_generate + 用例批次提交协议 | M | done | 2026-09-27 | §3 记录区 [WP-19] |
+| WP-20 | coverage_check | S | done | 2026-09-27 | §3 记录区 [WP-20] |
 | WP-21 | EventBus + SSE | M | todo | | — |
 | WP-22 | Registry + Runner | M | todo | | — |
 | WP-23 | Reaper + 启停序列 | S | todo | | — |
@@ -78,6 +78,24 @@
 ## 3. 交接记录（按完成顺序倒序追加，最新在最上）
 
 <!-- 记录区开始：新记录插入到本行下方 -->
+
+### [WP-20] coverage_check — done（2026-09-27）
+
+- 状态：done
+- 交付物：[domain.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/domain.py) 补 §2.6 `CoverageRow`（clause_id/object_type[point|case]/object_id/covered/evidence）/`CoverageMatrix`（rows/uncovered_clauses/supplemental_rounds/degraded）；[case_generate.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/graph/nodes/case_generate.py) 抽出 `generate_case_batch`（检索→LLM→finalize→先文件后 DB 提交→trace 闭环的单批函数，原 worker 薄封装复用），`_batch_scope` 对空 story_id 虚拟单元返回 None（仅类型过滤，避免空白名单 filtered_scope 全裁）；新建 [graph/nodes/coverage_check.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/graph/nodes/coverage_check.py)——纯函数 `build_virtual_points`（未覆盖条款→虚拟测试点 `pt-sup{round}-{seq}`，条款序确定性序号，story_id=""/source_entry_ids=[]）、`build_coverage_matrix`（active clause × point.clause_ids 点覆盖 + point 下 active case 例覆盖，evidence 取标题；obsolete 例/deleted 条款不计）、`matrix_summary`、`count_supp_rounds`（从 case_generate progress 读 sup 批最大轮号）；`coverage_check_node`（初始矩阵→崩溃确定性重建历史 sup 轮零 LLM→≤`coverage_max_rounds`（runtime_config，默认 2）轮 `generate_case_batch(batch_id=sup{round})` 后重算→达上限 degraded=true→artifact(coverage_check,v1,CoverageMatrix)→发 `coverage_ready{matrix_summary,warnings}`，轮边界查取消）；nodes/__init__ 导出；新增 tests/test_coverage_check.py（12 用例）
+- 验收：`pytest tests/ -W error` **540 passed**（528+12）。覆盖 WBS 三态：① 全覆盖：零补充 LLM、warnings=[]、matrix_summary.covered_clause_count 对账；② 部分覆盖：sup1 一轮补齐（sup1 两行挂 pt-sup1-1/2、batch_id=sup1、提示词含虚拟点 ID、progress 挂 case_generate artifact、mq+rr+生成 3 调用）；③ 达上限：两轮空产出→degraded=true、uncovered 保持、coverage_ready warnings=[{reason:uncovered_after_max_rounds,uncovered_clauses,max_rounds}]（实测第二轮 rerank 命中 run 内缓存零调用：kinds 计数 case=2/mq=2/rerank=1）。另覆盖：纯矩阵点/例行与 evidence、obsolete 例与 deleted 条款排除、count_supp_rounds 前缀判别、runtime_config coverage_max_rounds=1 覆盖、**sup1 提交后崩溃重建**（progress 有 sup1→重建虚拟点零 LLM，仅跑 sup2 共 3 调用且最终全覆盖）、同 run coverage artifact 终态回放零 LLM、缺 clauses/point_plan/case_generate artifact 三类报错；全五节点注入 build_graph 编译通过
+- 与设计偏离（均不碰冻结契约，文件头 docstring 复述）：① 矩阵只落 covered=True 命中行（对象存在才有行），未覆盖仅经 uncovered_clauses 表达——CoverageRow.covered 字段保留供 review_export 后续承载失效/人工行；② 虚拟点 story_id=""/source_entry_ids=[]，补充用例正常落 MD/testcase 行（point_id 挂虚拟点，评审列表 WP-27 可见），检索 scope=None 不做归属裁决；③ 补充批 progress 随 commit_case_batch 落在 **case_generate** artifact（"走同一写入路径"），coverage artifact 只存终态矩阵、自身无批次/progress；④ coverage_max_rounds 读 runtime_config，引导行缺失/值非法/负值退回默认 2
+- 遗留与提问：`coverage_ready` 现直接走 ctx.emit（EventBus 落库+广播与 SSE 回放属 WP-21，事件名/payload 已按 §10.4 定型可直接接线）；图正常结束后 task→completed 与 task_done 事件由 Runner（WP-22）负责；虚拟点补充用例在 CP 修订（WP-24 回退）作废 PointPlan 版本时的级联策略随回退协议统一处理
+- 下个包起步点：**WP-21** EventBus + SSE（dd §6.2 §10.4：先落库后广播+订阅闭窗、GET /tasks/{id}/events、Last-Event-ID/after_event_id 回放、ping；coverage_ready/batch_progress/node_* 等事件发射点已在节点与 batch.py 就位）
+
+### [WP-19] case_generate + 用例批次提交协议 — done（2026-09-27）
+
+- 状态：done
+- 交付物：迁移 [003_testcase_batch_id.sql](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/store/migrations/003_testcase_batch_id.sql)（testcase 加 batch_id 列+索引，sweep 维度）；[models.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/store/models.py) CaseRow 加 batch_id、TestcaseDAO.put_batch 含 batch_id + 新增 sweep_stale_idem（同 task+version+batch_id 未产出行置 obsolete）+ list_by_batch、ArtifactDAO.attach_case_ids（回填 progress.result_ids）；[runtime/context.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/runtime/context.py) DAOs 加 testcase/trace 字段；新建 [graph/nodes/case_generate.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/graph/nodes/case_generate.py)（纯函数 build_case_intent/finalize_cases[case_id=uuid5(CASE_ID_NS, f"{task}|{v}|{batch}|{point}|{seq}") 确定性赋值、entry_ids 白名单过滤+degraded] + commit_case_batch[先文件后 DB：write_case 原子写→immediate_tx 内 put_batch+sweep_stale_idem+attach_case_ids] + case_generate_node[CP2 后取 point_plan→按 5 点/批 run_in_batches→每批 passage 档检索+LLM+finalize+commit+trace 闭环→回填 artifact summary]）；nodes/__init__ 导出；新增 tests/test_case_generate.py（10 用例）
+- 验收：`pytest tests/ -W error` **528 passed**（518+10）。覆盖：① finalize 确定性 case_id（同输入恒等、不同 batch_id 不同）+ 白名单剔除 ghost/ghost2 + degraded 记 `case_generate.source_whitelist/entry_not_injected:{eid}/drop_source_entry` + 缺 point 允许空 + 空 title/空 steps 报 LLMBadOutput + 非法 priority→P1；② commit_case_batch 写文件+行、重放幂等（INSERT OR IGNORE 无重复行、同 hash 无重复文件）、sweep_stale_idem 把上一轮孤儿行置 obsolete 且正常行保持 active；③ case_generate_node 端到端 artifact(case_generate,v1,summary{case_count,case_ids})+testcase 3 active 行+progress+trace 闭环、同 run 全部 done 批零 LLM 重放、缺 point_plan 报错
+- 与设计偏离（均不碰冻结契约，文件头 docstring 复述）：① LLM 输出采用 `by_point` dict（point_id→cases 数组）而非 prompt 分段文本，便于服务端按点对齐 seq；② case_generate 产物主要落 testcase 行，artifact 仅存 summary+progress；③ 检索 scope 同时传 link_ids/story_ids（从 state.link_plan 映射 story→link，无 link_plan 时仅 story_ids）；④ CASE_ID_NS 用固定 UUID（非配置项），保证跨 run 同 task+version+batch+point+seq 恒等（重跑同批同 ID）
+- 遗留与提问：CP3 人工确认/评审状态迁移属 WP-22/26；regenerate 入口（dd §7.6）调 case_generate worker 单批重跑属 WP-26；case MD 文件解析（mistune）属 WP-05 已预留，本包未触
+- 下个包起步点：**WP-20** coverage_check（dd §7.5④：程序化点覆盖/例覆盖矩阵，未覆盖条款→虚拟单元调 case_generate 单批兜底，达上限 degraded=true 告警降级）
 
 ### [WP-18] 批次执行器 + point_write — done（2026-09-27）
 

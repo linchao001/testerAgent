@@ -18,6 +18,20 @@ from .point_write import (
     order_stories_by_link,
     point_write_node,
 )
+from .case_generate import (
+    build_case_intent,
+    case_generate_node,
+    commit_case_batch,
+    finalize_cases,
+    generate_case_batch,
+)
+from .coverage_check import (
+    build_coverage_matrix,
+    build_virtual_points,
+    coverage_check_node,
+    count_supp_rounds,
+    matrix_summary,
+)
 
 __all__ = [
     "ClauseSpan",
@@ -32,4 +46,14 @@ __all__ = [
     "finalize_point_plan",
     "order_stories_by_link",
     "point_write_node",
+    "build_case_intent",
+    "case_generate_node",
+    "commit_case_batch",
+    "finalize_cases",
+    "generate_case_batch",
+    "build_coverage_matrix",
+    "build_virtual_points",
+    "coverage_check_node",
+    "count_supp_rounds",
+    "matrix_summary",
 ]

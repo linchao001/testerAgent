@@ -7,7 +7,8 @@ WP-03 落地 task / stage_artifact / testcase 三表 Row 转换所需类型；
 WP-04 补检索/消息/提案枚举与 §2.8 检索域对象；WP-05 补 CaseFileContent/CaseStep/FileRef；
 WP-17 补 §2.3 LinkPlan（LinkRef/StoryRef/NewLinkSuggestion）；
 WP-18 补 §2.4 PointPlan（TestPoint）；
-其余 §2 类型随对应 WP 增补（CoverageMatrix→WP-20 等）。
+WP-20 补 §2.6 CoverageMatrix（CoverageRow）；
+其余 §2 类型随对应 WP 增补。
 """
 
 from __future__ import annotations
@@ -155,6 +156,24 @@ class TestPoint(BaseModel):
 
 class PointPlan(BaseModel):
     points: list[TestPoint]
+
+
+# ---------- §2.6 覆盖矩阵（CoverageMatrix；WP-20） ----------
+
+
+class CoverageRow(BaseModel):
+    clause_id: str
+    object_type: Literal["point", "case"]
+    object_id: str  # point_id / case_id
+    covered: bool
+    evidence: str  # 命中依据摘要（测试点标题/用例标题）
+
+
+class CoverageMatrix(BaseModel):
+    rows: list[CoverageRow]
+    uncovered_clauses: list[str]
+    supplemental_rounds: int  # 已执行的补充生成轮次（上限 2）
+    degraded: bool = False  # 达上限仍有未覆盖→告警降级
 
 
 # ---------- task.requirement_ref（DDL §3.1 注释形态 {path,content_hash,clause_count}） ----------

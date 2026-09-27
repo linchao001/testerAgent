@@ -79,7 +79,7 @@ def _open_raw(db_path: Path):
 class TestMigrations:
     def test_discover_finds_all_migrations(self):
         migrations = discover_migrations()
-        assert [v for v, _ in migrations] == [1, 2]
+        assert [v for v, _ in migrations] == [1, 2, 3]
         assert migrations[0][1].name == "001_init.sql"
         assert migrations[1][1].name == "002_testcase_created_at.sql"
 
@@ -88,7 +88,7 @@ class TestMigrations:
 
         applied = run_migrations(db_path)
 
-        assert applied == [1, 2]
+        assert applied == [1, 2, 3]
         assert db_path.is_file()
         with _open_raw(db_path) as conn:
             tables = {
@@ -109,24 +109,26 @@ class TestMigrations:
             rows = conn.execute(
                 "SELECT schema_version, applied_at FROM schema_meta ORDER BY schema_version"
             ).fetchall()
-            assert [r["schema_version"] for r in rows] == [1, 2]
+            assert [r["schema_version"] for r in rows] == [1, 2, 3]
             assert rows[0]["applied_at"]
-            # 002：testcase.created_at 为 NOT NULL
+            # 002：testcase.created_at 为 NOT NULL；003：testcase.batch_id
             case_cols = {r["name"]: r for r in conn.execute("PRAGMA table_info(testcase)")}
             assert "created_at" in case_cols
             assert case_cols["created_at"]["notnull"] == 1
+            assert "batch_id" in case_cols
+            assert case_cols["batch_id"]["notnull"] == 1
             # config 单行由 DDL 内置插入
             cfg = conn.execute("SELECT id FROM config").fetchall()
             assert [r["id"] for r in cfg] == [1]
 
     def test_repeat_migration_idempotent(self, tmp_path):
         db_path = tmp_path / "app.db"
-        assert run_migrations(db_path) == [1, 2]
+        assert run_migrations(db_path) == [1, 2, 3]
 
         # 重复执行：不重复应用、不重复插版本行、表完好
         assert run_migrations(db_path) == []
         with _open_raw(db_path) as conn:
-            assert conn.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 2
+            assert conn.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 3
             assert conn.execute("SELECT COUNT(*) FROM config").fetchone()[0] == 1
 
     def test_wal_persisted_on_file(self, tmp_path):
@@ -182,7 +184,7 @@ class TestMigrations:
         finally:
             conn.close()
 
-        assert run_migrations(db_path) == [2]
+        assert run_migrations(db_path) == [2, 3]
 
         with _open_raw(db_path) as conn:
             row = conn.execute(
@@ -197,7 +199,7 @@ class TestMigrations:
                     "SELECT schema_version FROM schema_meta ORDER BY schema_version"
                 )
             ]
-            assert versions == [1, 2]
+            assert versions == [1, 2, 3]
         assert run_migrations(db_path) == []
 
 
@@ -358,7 +360,7 @@ class TestSeed:
             out_lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
             out1 = json.loads(out_lines[-1])
             assert out1["ok"] is True
-            assert out1["migrated"] == [1, 2]
+            assert out1["migrated"] == [1, 2, 3]
             assert out1["seeded"]["agent_inserted"] is True
 
             assert cli_main(["init-db"]) == 0

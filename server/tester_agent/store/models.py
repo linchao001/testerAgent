@@ -260,6 +260,7 @@ class CaseRow:
     file_path: str
     content_hash: str
     title: str
+    batch_id: str = ""
     lineage: str = "{}"
     status: str = "active"
     review_status: str = "pending"
@@ -278,6 +279,7 @@ class CaseRow:
         task_id: str,
         record: domain.CaseRecord,
         *,
+        batch_id: str = "",
         error_code: str | None = None,
         now: str | None = None,
     ) -> "CaseRow":
@@ -286,6 +288,7 @@ class CaseRow:
             task_id=task_id,
             point_id=record.point_id,
             stage_version=record.stage_version,
+            batch_id=batch_id,
             lineage=_dumps(record.lineage.model_dump()),
             status=record.status.value,
             review_status=record.review_status.value,
@@ -619,6 +622,47 @@ class ArtifactDAO:
         if res.rowcount == 0:
             raise NotFoundError(f"阶段产物不存在：{artifact_id}")
 
+    async def attach_case_ids(
+        self,
+        task_id: str,
+        stage: str,
+        stage_version: int,
+        batch_id: str,
+        case_ids: list[str],
+    ) -> None:
+        """dd §11.1：把本批产出的 case_id 回填到 artifact.progress 对应批的
+        result_ids（供进度查询与重放对账）。更新当前 active artifact；若该批
+        记录不存在则追加一条 done 记录。调用方通常包在 immediate_tx 内与
+        put_batch 同事务。"""
+        art = await self.get_active(task_id, stage)
+        if art is None:
+            raise NotFoundError(
+                f"阶段产物不存在：{task_id}/{stage}"
+            )
+        batches = art.progress_list()
+        found = False
+        for b in batches:
+            if b.get("batch_id") == batch_id:
+                b["result_ids"] = list(case_ids)
+                b["status"] = "done"
+                found = True
+                break
+        if not found:
+            batches.append(
+                {
+                    "batch_id": batch_id,
+                    "node": stage,
+                    "unit_ids": [],
+                    "status": "done",
+                    "idem": "",
+                    "result_ids": list(case_ids),
+                }
+            )
+        await self._db.aexecute(
+            "UPDATE stage_artifact SET progress = ? WHERE id = ?",
+            (_dumps(batches), art.id),
+        )
+
 
 # ---------- TestcaseDAO ----------
 
@@ -631,8 +675,9 @@ class TestcaseDAO:
         self._db = db
 
     _COLUMNS = (
-        "id, task_id, point_id, stage_version, lineage, status, review_status, "
-        "file_path, content_hash, title, trace_refs, error_info, created_at, updated_at"
+        "id, task_id, point_id, stage_version, batch_id, lineage, status, "
+        "review_status, file_path, content_hash, title, trace_refs, "
+        "error_info, created_at, updated_at"
     )
 
     async def put_batch(self, rows: list[CaseRow]) -> None:
@@ -654,6 +699,7 @@ class TestcaseDAO:
                     r.task_id,
                     r.point_id,
                     r.stage_version,
+                    r.batch_id,
                     r.lineage,
                     r.status,
                     r.review_status,
@@ -668,9 +714,50 @@ class TestcaseDAO:
             )
         await self._db.aexecutemany(
             "INSERT OR IGNORE INTO testcase (" + self._COLUMNS + ") "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             params,
         )
+
+    async def sweep_stale_idem(
+        self,
+        task_id: str,
+        stage_version: int,
+        batch_id: str,
+        keep: list[str],
+    ) -> int:
+        """非确定性防护（dd §7.3/§11.1）：把本批上一轮失败重做后遗留、且本次未
+        产出的孤儿行置 obsolete。
+
+        范围：``task_id + stage_version + batch_id``；保留 ``keep``（本轮产出的
+        确定性 case_id 集合）。返回被置 obsolete 的行数。调用方须包在
+        immediate_tx 内，与 put_batch 同事务。"""
+        if not keep:
+            placeholders = ""
+            params: list[Any] = []
+        else:
+            placeholders = ",".join("?" for _ in keep)
+            params = list(keep)
+        sql = (
+            f"UPDATE testcase SET status = 'obsolete', updated_at = ? "
+            f"WHERE task_id = ? AND stage_version = ? AND batch_id = ? "
+            f"AND status != 'obsolete'"
+        )
+        if placeholders:
+            sql += f" AND id NOT IN ({placeholders})"
+        params = [utcnow_iso(), task_id, int(stage_version), batch_id, *params]
+        res = await self._db.aexecute(sql, params)
+        return res.rowcount
+
+    async def list_by_batch(
+        self, task_id: str, stage_version: int, batch_id: str
+    ) -> list[CaseRow]:
+        """列出某批全部用例行（含 obsolete，供重放对账/孤儿清理核对）。"""
+        rows = await self._db.aquery(
+            f"SELECT {self._COLUMNS} FROM testcase "
+            f"WHERE task_id = ? AND stage_version = ? AND batch_id = ?",
+            (task_id, int(stage_version), batch_id),
+        )
+        return [CaseRow.from_row(r) for r in rows]
 
     async def get(self, case_id: str) -> CaseRow:
         row = await self._db.aquery_one(

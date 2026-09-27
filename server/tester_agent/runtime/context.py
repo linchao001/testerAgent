@@ -16,7 +16,15 @@ from typing import TYPE_CHECKING, Any
 from ..adapters.llm import LLMClient
 from ..adapters.reme import IndexMirror, ReMeReader, ReMeReaderFactory
 from ..store.db import Database
-from ..store.models import ArtifactDAO, ConfigDAO, MessageDAO, TaskDAO, TaskRow
+from ..store.models import (
+    ArtifactDAO,
+    ConfigDAO,
+    MessageDAO,
+    TaskDAO,
+    TaskRow,
+    TestcaseDAO,
+    TraceDAO,
+)
 from ..store.workspace_files import FileStore
 
 if TYPE_CHECKING:
@@ -66,6 +74,8 @@ class DAOs:
     task: TaskDAO
     message: MessageDAO
     artifact: ArtifactDAO | None = None
+    testcase: "TestcaseDAO | None" = None
+    trace: "TraceDAO | None" = None
 
 
 @dataclass
