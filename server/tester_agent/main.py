@@ -3,9 +3,12 @@
 接线状态：WP-01 骨架 → WP-21 EventBus + SSE → WP-22 GraphRegistry/
 TaskRegistry/Runner → WP-23 Reaper + lifespan 启停序列 + 优雅关闭 →
 WP-25 API-A 路由（workspaces/agents/conversations/config）+ reme_factory
-入 app.state（kb/test 探活与 Runner build_ctx 共用同一工厂实例）。
+入 app.state（kb/test 探活与 Runner build_ctx 共用同一工厂实例）→
+WP-26 API-B tasks 路由（create/get/run/cancel/confirm/answer/rollback）
++ file_store/app_ctx 入 app.state（创建任务写 requirement.md 与回退/
+regenerate 入口共用）。
 
-后续 WP 在此接线：tasks/cases/traces 等其余 API 路由（WP-26~28）、
+后续 WP 在此接线：cases/traces/snapshots 等 API 路由（WP-27~28）、
 静态托管 web/dist（WP-F0）。
 
 lifespan 严格按 dd §6.5 六步启动序列，任一步失败阻断启动；关闭先走
@@ -28,6 +31,7 @@ from .api.config import router as config_router
 from .api.conversations import router as conversations_router
 from .api.error_handling import install_error_handling
 from .api.events import make_events_router
+from .api.tasks import router as tasks_router
 from .api.workspaces import router as workspaces_router
 from .errors import LLMBadRequest
 from .graph.constants import HEARTBEAT_INTERVAL_SEC, HEARTBEAT_STALE_SEC
@@ -70,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db = Database(settings.app_db_path)
         _app.state.db = db
         file_store = FileStore(settings.workspaces_dir)
+        _app.state.file_store = file_store
 
         # 2. 加载 config；EventBus、ReMeFactory 就位（不做远端探活）
         bus = EventBus(EventDAO(db))
@@ -111,6 +116,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 bus=bus,
                 registry=task_registry,
             )
+            _app.state.app_ctx = app_ctx  # WP-26：回退/regenerate 入口消费
             hb_interval = float(
                 runtime_cfg.get("heartbeat_interval_sec", HEARTBEAT_INTERVAL_SEC)
             )
@@ -153,6 +159,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(agents_router)
     app.include_router(conversations_router)
     app.include_router(config_router)
+
+    # WP-26：API-B（tech-design §5.2 §5.3 / dd §10.2 §10.3 §7.6）
+    app.include_router(tasks_router)
 
     # web/dist 存在时挂载静态资源（WP-F0 产出后生效；dd §19.2）
     if (_WEB_DIST / "index.html").is_file():  # pragma: no cover - 前端未产出前不触发

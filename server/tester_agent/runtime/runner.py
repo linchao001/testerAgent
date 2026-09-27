@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from langgraph.types import Command
+
 from ..adapters.reme import IndexMirror
 from ..errors import (
     AppError,
@@ -189,6 +191,47 @@ class TaskRegistry:
 # ---------- §6.4 Runner ----------
 
 
+async def build_task_context(app: "AppContext", task_id: str) -> "TaskContext":
+    """构造单次图运行的依赖包 :class:`TaskContext`（dd §6.1，配置快照 R21）。
+
+    Runner 主循环（``_run``）与 WP-26 API 层入口（回退 ctx / regenerate
+    入口）共用，保证读到的 task 行、DAO 组、Emitter、cancel_event 构造
+    口径一致。cancel_event 为新事件——由调用方决定是否桥接 DB 取消标志
+    （Runner 心跳循环负责；API 层的 regenerate 入口经心跳语义外直接检查）。
+    """
+    from .context import DAOs, TaskContext
+
+    db = app.db
+    task_dao = TaskDAO(db)
+    task: TaskRow = await task_dao.get(task_id)
+
+    ws = await WorkspaceDAO(db).get(task.workspace_id)
+    reader = await app.reme_factory.for_workspace(ws.kb_config_obj())
+
+    daos = DAOs(
+        task=task_dao,
+        message=MessageDAO(db),
+        artifact=ArtifactDAO(db),
+        testcase=TestcaseDAO(db),
+        trace=TraceDAO(db),
+        event=EventDAO(db),
+    )
+    bus = app.bus
+    return TaskContext(
+        app=app,
+        task=task,
+        run_id=task.graph_run_id,
+        files=app.file_store,
+        reader=reader,
+        snapshot_level=task.snapshot_level,
+        mirror=IndexMirror(reader),
+        agent_config={},
+        daos=daos,
+        emit=Emitter(bus, task_id) if bus is not None else None,
+        cancel_event=asyncio.Event(),
+    )
+
+
 @dataclass(frozen=True)
 class RunHandle:
     """``Runner.start`` 立即返回的句柄（后台执行，不阻塞到图结束）。"""
@@ -219,29 +262,39 @@ class Runner:
         self,
         task_id: str,
         *,
-        event: str = "run",
+        event: str | None = "run",
+        resume: Any = None,
     ) -> RunHandle:
         """启动/续跑任务（后台 asyncio.Task），立即返回 :class:`RunHandle`。
 
         acquire（409/404）与状态迁移校验（409）在返回句柄前同步完成，
         调用方（API WP-26）可直接把异常翻译成错误信封。
+
+        :param event: 状态机事件（``run``/``confirm``/``answer``）；
+            ``None`` 表示调用方（WP-26 回退端点）已在协议事务内完成迁移
+            裁决并落账（task 已切 running/新 run），此处只负责接管执行，
+            跳过迁移校验（dd §11.2 回退时序）。
+        :param resume: 非空时作为 ``Command(resume=resume)`` 恢复图运行
+            （函数式 ``interrupt()`` 澄清答复，dd §7.6 answer 行）；
+            缺省走启动/静态 gate 恢复（``ainvoke(None)``）。
         """
         registry = self._app.registry
         token = await registry.acquire(task_id)
         try:
             task = await TaskDAO(self._app.db).get(task_id)
-            target = validate_transition(task.status, event)
+            if event is not None:
+                target = validate_transition(task.status, event)
+                if target != "running":
+                    await registry.release(task_id, token)
+                    raise TaskStateConflict(
+                        f"该事件不会启动任务：{task.status} --{event}--> {target}",
+                        details={"current": task.status, "event": event, "target": target},
+                    )
         except TaskStateConflict:
             await registry.release(task_id, token)
             raise
-        if target != "running":
-            await registry.release(task_id, token)
-            raise TaskStateConflict(
-                f"该事件不会启动任务：{task.status} --{event}--> {target}",
-                details={"current": task.status, "event": event, "target": target},
-            )
         run_task = asyncio.create_task(
-            self._run(task_id, token),
+            self._run(task_id, token, resume),
             name=f"task-{task_id}",
         )
         registry.attach(task_id, run_task)
@@ -253,7 +306,7 @@ class Runner:
 
     # ---- 主循环 ----
 
-    async def _run(self, task_id: str, token: str) -> None:
+    async def _run(self, task_id: str, token: str, resume: Any = None) -> None:
         trace_id_var.set(new_trace_id())
         ctx: "TaskContext | None" = None
         hb: asyncio.Task | None = None
@@ -271,9 +324,13 @@ class Runner:
                     "ctx": ctx,
                 }
             }
-            graph_input = await self._initial_or_resume_input(
-                graph, ctx, invoke_cfg
-            )
+            if resume is not None:
+                # 函数式 interrupt 恢复（澄清答复，dd §7.6 answer 行）
+                graph_input: Any = Command(resume=resume)
+            else:
+                graph_input = await self._initial_or_resume_input(
+                    graph, ctx, invoke_cfg
+                )
             result = await graph.ainvoke(graph_input, invoke_cfg)
 
             await self._settle_after_invoke(ctx, graph, invoke_cfg, result)
@@ -298,37 +355,7 @@ class Runner:
     # ---- TaskContext 构造（配置快照冻结 R21） ----
 
     async def _build_ctx(self, task_id: str) -> "TaskContext":
-        from .context import DAOs, TaskContext
-
-        db = self._app.db
-        task_dao = TaskDAO(db)
-        task: TaskRow = await task_dao.get(task_id)
-
-        ws = await WorkspaceDAO(db).get(task.workspace_id)
-        reader = await self._app.reme_factory.for_workspace(ws.kb_config_obj())
-
-        daos = DAOs(
-            task=task_dao,
-            message=MessageDAO(db),
-            artifact=ArtifactDAO(db),
-            testcase=TestcaseDAO(db),
-            trace=TraceDAO(db),
-            event=EventDAO(db),
-        )
-        bus = self._app.bus
-        return TaskContext(
-            app=self._app,
-            task=task,
-            run_id=task.graph_run_id,
-            files=self._app.file_store,
-            reader=reader,
-            snapshot_level=task.snapshot_level,
-            mirror=IndexMirror(reader),
-            agent_config={},
-            daos=daos,
-            emit=Emitter(bus, task_id) if bus is not None else None,
-            cancel_event=asyncio.Event(),
-        )
+        return await build_task_context(self._app, task_id)
 
     async def _initial_or_resume_input(
         self,

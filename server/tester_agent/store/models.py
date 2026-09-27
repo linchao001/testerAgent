@@ -532,10 +532,16 @@ class TaskDAO:
         self, task_id: str, *, graph_run_id: str, thread_id: str, stage: str
     ) -> None:
         """回退落账事务内调用（dd §11.2）：切换 run/thread、回退入口阶段、清取消标志。
-        状态迁移（→running）由调用方经 update_status 在同事务完成。"""
+        状态迁移（→running）由调用方经 update_status 在同事务完成。
+
+        WP-26 增量（交接单登记）：同时清空 runner_heartbeat——旧 run 的残留
+        心跳会让 Runner.start 的 Registry 新鲜心跳判活误判"他方运行中"（409），
+        而心跳 UPDATE 本身按 graph_run_id 匹配，新 run 永远续不上旧值。
+        """
         res = await self._db.aexecute(
             "UPDATE task SET graph_run_id = ?, langgraph_thread_id = ?, "
-            "current_stage = ?, cancel_requested = 0, updated_at = ? WHERE id = ?",
+            "current_stage = ?, cancel_requested = 0, runner_heartbeat = NULL, "
+            "updated_at = ? WHERE id = ?",
             (graph_run_id, thread_id, stage, utcnow_iso(), task_id),
         )
         if res.rowcount == 0:
@@ -626,6 +632,17 @@ class ArtifactDAO:
         res = await self._db.aexecute(
             "UPDATE stage_artifact SET status = 'superseded' WHERE id = ?",
             (artifact_id,),
+        )
+        if res.rowcount == 0:
+            raise NotFoundError(f"阶段产物不存在：{artifact_id}")
+
+    async def mark_confirmed(self, artifact_id: str, by: str = "user") -> None:
+        """检查点确认落账（WP-26 增量方法，dd §7.6 confirm 行）：
+        confirmed_by=user、origin 保持 system。调用方须先校验该产物为当前
+        active 且版本匹配（乐观锁在 API 层）。"""
+        res = await self._db.aexecute(
+            "UPDATE stage_artifact SET confirmed_by = ? WHERE id = ?",
+            (by, artifact_id),
         )
         if res.rowcount == 0:
             raise NotFoundError(f"阶段产物不存在：{artifact_id}")
@@ -924,6 +941,30 @@ class TestcaseDAO:
         )
         if res.rowcount == 0:
             raise NotFoundError(f"测试用例不存在：{case_id}")
+
+    async def set_lineage(self, case_id: str, lineage: dict) -> None:
+        """重生成落账：新用例行 lineage 挂旧 case（WP-26 增量方法，
+        dd §7.6 regenerate 行 ``regenerated_from_case_id``）。"""
+        res = await self._db.aexecute(
+            "UPDATE testcase SET lineage = ?, updated_at = ? WHERE id = ?",
+            (_dumps(lineage), utcnow_iso(), case_id),
+        )
+        if res.rowcount == 0:
+            raise NotFoundError(f"测试用例不存在：{case_id}")
+
+    async def mark_obsolete_by_ids(self, task_id: str, case_ids: list[str]) -> int:
+        """把指定 active 用例置 obsolete（WP-26 增量方法，dd §7.6 regenerate
+        keep_original=False 旧行废弃）。返回受影响行数。"""
+        if not case_ids:
+            return 0
+        placeholders = ",".join("?" for _ in case_ids)
+        res = await self._db.aexecute(
+            f"UPDATE testcase SET status = 'obsolete', updated_at = ? "
+            f"WHERE task_id = ? AND status = 'active' "
+            f"AND id IN ({placeholders})",
+            [utcnow_iso(), task_id, *case_ids],
+        )
+        return res.rowcount
 
     async def mark_obsolete_by_version(
         self, task_id: str, versions: list[int]
