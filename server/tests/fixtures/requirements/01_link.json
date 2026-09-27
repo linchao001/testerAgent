@@ -1,0 +1,32 @@
+{
+  "name": "01_link",
+  "stage": "link_identify",
+  "intent": "订单 链路",
+  "requirement": "需求 R1：识别订单链路中的相关 story",
+  "scope": null,
+  "clauses": ["c1", "c2", "c3"],
+  "llm": {
+    "multi_query": {
+      "keyword_queries": ["订单主链路", "下单链路"],
+      "rewrite_queries": ["订单处理流程", "订单正向链路"]
+    },
+    "rerank_scores": {
+      "l1": 100,
+      "l2": 90,
+      "s1": 80,
+      "s2": 70
+    }
+  },
+  "expected": {
+    "entries": ["l1", "l2", "s1", "s2"],
+    "generated_texts": [
+      "[ID:l1]订单链路 [ID:s1]下单故事 [ID:s2]支付故事 [ID:l2]退款链路"
+    ],
+    "entry_clauses": {
+      "l1": ["c1"],
+      "s1": ["c2"],
+      "s2": ["c3"],
+      "l2": ["c1", "c2"]
+    }
+  }
+}

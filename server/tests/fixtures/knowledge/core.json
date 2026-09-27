@@ -1,0 +1,18 @@
+{
+  "entries": [
+    {"entry_id": "l1", "entry_type": "link_index", "title": "订单链路", "content": "订单 创建 支付 履约 主链路 正向", "summary": "订单链路：下单到履约的正向主链路", "link_id": "L1"},
+    {"entry_id": "l2", "entry_type": "link_index", "title": "退款链路", "content": "退款 售后 逆向 链路 退货", "summary": "退款链路：售后逆向流程", "link_id": "L2"},
+    {"entry_id": "s1", "entry_type": "link_index", "title": "下单故事", "content": "订单 创建 购物车 结算 提交", "summary": "下单故事：购物车结算到订单创建", "link_id": "L1", "story_id": "S1"},
+    {"entry_id": "s2", "entry_type": "link_index", "title": "支付故事", "content": "支付 收银台 回调 关单", "summary": "支付故事：收银台与支付回调", "link_id": "L1", "story_id": "S2"},
+    {"entry_id": "b1", "entry_type": "business", "title": "订单状态机", "content": "订单 状态 流转 创建 支付 发货 完成 取消 状态机", "summary": "订单状态机与流转规则", "link_id": "L1"},
+    {"entry_id": "b2", "entry_type": "business", "title": "退款规则", "content": "退款 金额 运费 规则 售后 审核", "summary": "退款金额与运费规则", "link_id": "L2"},
+    {"entry_id": "f1", "entry_type": "flow_case", "title": "下单主流程", "content": "下单 流程 购物车 提交 订单 创建 成功 主流程", "summary": "下单主流程步骤", "link_id": "L1"},
+    {"entry_id": "f2", "entry_type": "flow_case", "title": "退款流程", "content": "退款 流程 申请 审核 打款 到账", "summary": "退款流程步骤", "link_id": "L2"},
+    {"entry_id": "d1", "entry_type": "defect", "title": "支付回调超时缺陷", "content": "支付 回调 超时 重复 通知 幂等 缺陷 历史", "summary": "支付回调超时导致重复通知", "link_id": "L1", "story_id": "S2"},
+    {"entry_id": "d2", "entry_type": "defect", "title": "库存超卖缺陷", "content": "库存 超卖 并发 缺陷 历史 复盘 扣减", "summary": "并发下单导致库存超卖", "link_id": "L1"},
+    {"entry_id": "a1", "entry_type": "api", "title": "创建订单接口", "content": "POST /orders 创建 订单 接口 参数 幂等 令牌", "summary": "创建订单 REST 接口", "link_id": "L1", "story_id": "S1"},
+    {"entry_id": "a2", "entry_type": "api", "title": "支付回调接口", "content": "POST /pay/callback 支付 回调 接口 验签 重试", "summary": "支付回调验签与重试", "link_id": "L1", "story_id": "S2"},
+    {"entry_id": "db1", "entry_type": "db", "title": "orders 表", "content": "orders 表 字段 订单 状态 金额 索引", "summary": "订单主表", "link_id": "L1"},
+    {"entry_id": "db2", "entry_type": "db", "title": "payments 表", "content": "payments 表 支付 流水 回调 状态 字段", "summary": "支付流水表", "link_id": "L1", "story_id": "S2"}
+  ]
+}

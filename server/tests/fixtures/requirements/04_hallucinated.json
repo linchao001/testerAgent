@@ -1,0 +1,30 @@
+{
+  "name": "04_hallucinated",
+  "stage": "case_generate",
+  "intent": "创建 订单 接口",
+  "requirement": "需求 R4：为创建订单接口写用例；期望产物含幻觉引用与未用上条目",
+  "scope": {"link_ids": ["L1"]},
+  "clauses": ["c1", "c2"],
+  "llm": {
+    "multi_query": {
+      "keyword_queries": ["创建订单"],
+      "rewrite_queries": ["下单接口"]
+    },
+    "rerank_scores": {
+      "a1": 100,
+      "db1": 90,
+      "b1": 85
+    }
+  },
+  "expected": {
+    "entries": ["a1", "db1", "b1"],
+    "generated_texts": [
+      "用例1：创建订单接口 [ID:a1] 参数校验，核对 [ID:db1] 表结构\n用例2：非法 order_id 边缘场景，参考 [ID:x99]"
+    ],
+    "entry_clauses": {
+      "a1": ["c1"],
+      "db1": ["c2"],
+      "b1": ["c1"]
+    }
+  }
+}

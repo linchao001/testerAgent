@@ -1,0 +1,30 @@
+{
+  "name": "02_point",
+  "stage": "point_write",
+  "intent": "订单 支付",
+  "requirement": "需求 R2：基于订单链路（L1）写下单/支付测试点",
+  "scope": {"link_ids": ["L1"]},
+  "clauses": ["c1", "c2", "c3"],
+  "llm": {
+    "multi_query": {
+      "keyword_queries": ["订单支付", "下单支付"],
+      "rewrite_queries": ["订单与支付集成", "支付链路"]
+    },
+    "rerank_scores": {
+      "b1": 95,
+      "d1": 90,
+      "f1": 85
+    }
+  },
+  "expected": {
+    "entries": ["b1", "d1", "f1"],
+    "generated_texts": [
+      "测试点1：订单状态机 [ID:b1] 与下单主流程 [ID:f1]\n测试点2：支付回调超时历史缺陷 [ID:d1]"
+    ],
+    "entry_clauses": {
+      "b1": ["c1"],
+      "f1": ["c2"],
+      "d1": ["c3"]
+    }
+  }
+}

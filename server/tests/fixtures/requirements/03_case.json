@@ -1,0 +1,30 @@
+{
+  "name": "03_case",
+  "stage": "case_generate",
+  "intent": "支付 回调 幂等",
+  "requirement": "需求 R3：为支付故事（S2）的回调幂等性写用例",
+  "scope": {"link_ids": ["L1"], "story_ids": ["S2"]},
+  "clauses": ["c1", "c2", "c3"],
+  "llm": {
+    "multi_query": {
+      "keyword_queries": ["验签"],
+      "rewrite_queries": ["流水"]
+    },
+    "rerank_scores": {
+      "a2": 100,
+      "d1": 95,
+      "db2": 90
+    }
+  },
+  "expected": {
+    "entries": ["a2", "d1", "db2"],
+    "generated_texts": [
+      "用例1：支付回调接口 [ID:a2] 幂等性验证，参考历史缺陷 [ID:d1]\n用例2：payments 表流水核对 [ID:db2]"
+    ],
+    "entry_clauses": {
+      "a2": ["c1"],
+      "d1": ["c2"],
+      "db2": ["c3"]
+    }
+  }
+}
