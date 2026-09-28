@@ -8,7 +8,7 @@ from tester_agent.graph.control.graph import build_control_graph
 def test_control_graph_compiles_and_has_nodes():
     g = build_control_graph(checkpointer=None)
     names = set(g.get_graph().nodes)
-    for n in ("plan", "dispatch", "execute_step", "reflect"):
+    for n in ("plan", "dispatch", "execute_step", "await_human", "reflect"):
         assert n in names
 
 

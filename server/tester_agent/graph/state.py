@@ -38,4 +38,5 @@ class TaskState(TypedDict, total=False):
     subtask: dict | None
     reflection_log: list[dict]
     human_gates: dict
+    reflect_counts: dict
     _reflect_decision: str

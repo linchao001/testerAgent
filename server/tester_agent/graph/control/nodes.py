@@ -5,7 +5,11 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from langgraph.types import interrupt
+
 from ...domain import AgentPlan, PlanStep, PlanStepKind
+from .gates import gate_enabled
+from .reflect import decide_reflection
 
 
 def _default_steps() -> list[PlanStep]:
@@ -49,7 +53,6 @@ def plan_node(state: dict) -> dict[str, Any]:
     """Generate a deterministic initial plan when missing; keep existing on replan stub."""
     existing = state.get("agent_plan")
     if existing and existing.get("status") in ("active", "draft"):
-        # replan stub: bump version / replan_count; keep unfinished steps pending
         plan = AgentPlan.model_validate(existing)
         plan.version += 1
         plan.replan_count += 1
@@ -86,6 +89,15 @@ def _pending_step(plan: AgentPlan) -> PlanStep | None:
     return None
 
 
+def _step_by_id(plan: AgentPlan, step_id: str | None) -> PlanStep | None:
+    if not step_id:
+        return None
+    for step in plan.steps:
+        if step.step_id == step_id:
+            return step
+    return None
+
+
 def dispatch_node(state: dict) -> dict[str, Any]:
     plan = AgentPlan.model_validate(state["agent_plan"])
     nxt = _pending_step(plan)
@@ -109,16 +121,19 @@ def execute_step_node(state: dict) -> dict[str, Any]:
     artifacts = dict(state.get("artifacts") or {})
     for step in plan.steps:
         if step.step_id == cursor:
-            step.status = "running"
-            # stub artifact
-            art_id = f"art-{step.step_id}-{uuid.uuid4().hex[:8]}"
-            artifacts[art_id] = {
-                "kind": step.kind.value,
-                "version": 1,
-                "payload_ref": art_id,
-            }
-            step.output_ref = art_id
-            step.status = "done"
+            if step.status == "pending" or step.status == "running":
+                art_id = step.output_ref or f"art-{step.step_id}-{uuid.uuid4().hex[:8]}"
+                artifacts.setdefault(
+                    art_id,
+                    {
+                        "kind": step.kind.value,
+                        "version": 1,
+                        "payload_ref": art_id,
+                        "confirmed_by": None,
+                    },
+                )
+                step.output_ref = art_id
+                step.status = "done"
             break
     return {
         "agent_plan": plan.model_dump(),
@@ -126,15 +141,102 @@ def execute_step_node(state: dict) -> dict[str, Any]:
     }
 
 
-def reflect_node(state: dict) -> dict[str, Any]:
-    """Pass-through reflect (real rules in Task 4)."""
-    log = list(state.get("reflection_log") or [])
-    cursor = state.get("plan_cursor")
-    log.append({"step_id": cursor, "decision": "pass"})
-    log = log[-20:]
+def await_human_node(state: dict) -> dict[str, Any]:
+    """Interrupt when step requires an enabled human gate and is not confirmed."""
     plan = AgentPlan.model_validate(state["agent_plan"])
+    step = _step_by_id(plan, state.get("plan_cursor"))
+    if step is None or not step.requires_confirm:
+        return {}
+    if not gate_enabled(state.get("human_gates"), step.kind):
+        return {}
+    artifacts = dict(state.get("artifacts") or {})
+    art_id = step.output_ref
+    if not art_id:
+        return {}
+    art = dict(artifacts.get(art_id) or {})
+    if art.get("confirmed_by") == "user":
+        return {}
+
+    gate_kind = (
+        "review_decision"
+        if step.kind.value.startswith("review_")
+        else "plan_confirm"
+    )
+    resume = interrupt(
+        {
+            "gate_kind": gate_kind,
+            "artifact_id": art_id,
+            "step_id": step.step_id,
+            "kind": step.kind.value,
+        }
+    )
+    # Resume may carry confirm / modify payload from API
+    if isinstance(resume, dict):
+        if resume.get("action") == "modify" and resume.get("payload") is not None:
+            art["payload"] = resume["payload"]
+            art["version"] = int(art.get("version") or 1) + 1
+        art["confirmed_by"] = "user"
+        artifacts[art_id] = art
+        return {"artifacts": artifacts}
+    # Bare resume (ainvoke None after API marked confirm in state)
+    art["confirmed_by"] = art.get("confirmed_by") or "user"
+    artifacts[art_id] = art
+    return {"artifacts": artifacts}
+
+
+def reflect_node(state: dict) -> dict[str, Any]:
+    """Apply Reflexion rules; set _reflect_decision for routing."""
+    plan = AgentPlan.model_validate(state["agent_plan"])
+    step = _step_by_id(plan, state.get("plan_cursor"))
+    log = list(state.get("reflection_log") or [])
+    if step is None:
+        plan.status = "completed"
+        return {
+            "agent_plan": plan.model_dump(),
+            "plan_cursor": None,
+            "_reflect_decision": "pass",
+            "reflection_log": log,
+        }
+
+    artifacts = state.get("artifacts") or {}
+    art = artifacts.get(step.output_ref or "") or {}
+    reflect_counts = dict(state.get("reflect_counts") or {})
+    reflection_count = int(reflect_counts.get(step.step_id, 0))
+
+    decision = decide_reflection(
+        plan,
+        step,
+        reflection_count=reflection_count,
+        replan_count=plan.replan_count,
+        human_gates=state.get("human_gates"),
+        artifact_confirmed_by=art.get("confirmed_by"),
+    )
+
+    if decision == "repair":
+        reflect_counts[step.step_id] = reflection_count + 1
+        step.status = "pending"
+        log.append({"step_id": step.step_id, "decision": "repair"})
+        return {
+            "agent_plan": plan.model_dump(),
+            "reflect_counts": reflect_counts,
+            "reflection_log": log[-20:],
+            "_reflect_decision": "repair",
+        }
+
+    if decision == "replan":
+        # Ensure confirming steps stay pending until confirmed
+        if step.requires_confirm and art.get("confirmed_by") != "user":
+            step.status = "pending"
+        log.append({"step_id": step.step_id, "decision": "replan"})
+        return {
+            "agent_plan": plan.model_dump(),
+            "reflection_log": log[-20:],
+            "_reflect_decision": "replan",
+        }
+
+    log.append({"step_id": step.step_id, "decision": "pass"})
     updates: dict[str, Any] = {
-        "reflection_log": log,
+        "reflection_log": log[-20:],
         "_reflect_decision": "pass",
     }
     if _pending_step(plan) is None:
@@ -152,7 +254,7 @@ def route_after_reflect(state: dict) -> str:
         return "execute"
     if decision == "pass":
         plan = AgentPlan.model_validate(state["agent_plan"])
-        if _pending_step(plan) is None:
+        if _pending_step(plan) is None or plan.status == "completed":
             return "end"
         return "dispatch"
     return "dispatch"
