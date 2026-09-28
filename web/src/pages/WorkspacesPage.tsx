@@ -26,17 +26,20 @@ import { clearLastError, reportError } from '../stores/connection'
 import { useSession } from '../stores/session'
 
 const EMPTY_KB: KbConfig = {
-  mode: 'service',
-  target: 'http://127.0.0.1:8182',
   kb_id: 'zhb_kb',
+  knowledge_dir: 'knowledge',
+  options: {},
 }
 
 function asKbConfig(raw: Workspace['kb_config']): KbConfig {
   const r = raw as Partial<KbConfig>
   return {
-    mode: r.mode === 'sdk' ? 'sdk' : 'service',
-    target: typeof r.target === 'string' ? r.target : '',
     kb_id: typeof r.kb_id === 'string' ? r.kb_id : '',
+    knowledge_bases_dir:
+      typeof r.knowledge_bases_dir === 'string' ? r.knowledge_bases_dir : '',
+    knowledge_dir:
+      typeof r.knowledge_dir === 'string' ? r.knowledge_dir : 'knowledge',
+    create_knowledge_base: Boolean(r.create_knowledge_base),
     options: r.options,
   }
 }
@@ -328,42 +331,6 @@ export function WorkspacesPage() {
                 disabled={busy}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, description: e.target.value }))
-                }
-              />
-            </label>
-            <label className="block text-sm">
-              <span className="mb-1 block text-stone-700">接入模式</span>
-              <select
-                aria-label="接入模式"
-                className="w-full rounded-md border border-stone-300 px-3 py-1.5 text-sm"
-                value={form.kb.mode}
-                disabled={busy}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    kb: {
-                      ...f.kb,
-                      mode: e.target.value as KbConfig['mode'],
-                    },
-                  }))
-                }
-              >
-                <option value="service">service（HTTP）</option>
-                <option value="sdk">sdk</option>
-              </select>
-            </label>
-            <label className="block text-sm">
-              <span className="mb-1 block text-stone-700">服务地址</span>
-              <input
-                aria-label="服务地址"
-                className="w-full rounded-md border border-stone-300 px-3 py-1.5 text-sm"
-                value={form.kb.target}
-                disabled={busy}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    kb: { ...f.kb, target: e.target.value },
-                  }))
                 }
               />
             </label>

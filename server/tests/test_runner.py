@@ -93,7 +93,7 @@ async def _seed(db, *, status: str = "waiting_input",
     await WorkspaceDAO(db).create(
         WorkspaceRow.create(
             id=WS, name="ws",
-            kb_config={"mode": "sdk", "target": "lark", "kb_id": "KB1"},
+            kb_config={"kb_id": "KB1", "options": {}},
         )
     )
     await db.aexecute(

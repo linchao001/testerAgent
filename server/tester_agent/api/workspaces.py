@@ -14,10 +14,8 @@
 from __future__ import annotations
 
 import uuid
-from typing import Literal
-
 from fastapi import APIRouter, Query, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..errors import TaskStateConflict
 from ..store.models import TaskDAO, WorkspaceDAO, WorkspaceRow
@@ -30,10 +28,26 @@ router = APIRouter(prefix="/api/v1", tags=["workspaces"])
 
 
 class KbConfigIn(BaseModel):
-    mode: Literal["sdk", "service"]
-    target: str
-    kb_id: str
+    """Embedded ReMe kb_config（废除 mode/target HTTP 字段）。"""
+
+    kb_id: str = ""
+    knowledge_bases_dir: str = ""
+    knowledge_dir: str = "knowledge"
+    create_knowledge_base: bool = False
     options: dict = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_service_and_strip_legacy(cls, data):
+        if not isinstance(data, dict):
+            return data
+        if data.get("mode") == "service":
+            raise ValueError("mode=service 已废除，请使用嵌入式 sdk")
+        return {
+            k: v
+            for k, v in data.items()
+            if k not in ("mode", "target")
+        }
 
 
 class CreateWorkspaceIn(BaseModel):
@@ -120,9 +134,14 @@ async def update_workspace(
         updates["description"] = body.description
     if body.kb_config is not None:
         updates["kb_config"] = body.kb_config.model_dump()
-    dao = _dao(request)
-    await dao.update(workspace_id, **updates)
-    return _out(await dao.get(workspace_id))
+    await _dao(request).update(workspace_id, **updates)
+    pool = getattr(request.app.state, "memory_pool", None)
+    if pool is not None and body.kb_config is not None:
+        await pool.invalidate(workspace_id)
+        factory = getattr(request.app.state, "reme_factory", None)
+        if factory is not None:
+            await factory.invalidate(workspace_id)
+    return _out(await _dao(request).get(workspace_id))
 
 
 @router.delete("/workspaces/{workspace_id}")
@@ -143,7 +162,9 @@ async def delete_workspace(workspace_id: str, request: Request) -> dict:
 async def test_kb(workspace_id: str, request: Request) -> KbTestOut:
     ws = await _dao(request).get(workspace_id)  # 404 不暴露存在性
     factory = request.app.state.reme_factory
-    probe = await factory.probe(ws.kb_config_obj())  # AppError → 信封（§17.1）
+    probe = await factory.probe(
+        workspace_id, ws.kb_config_obj()
+    )  # AppError → 信封（§17.1）
     return KbTestOut(
         ok=True,
         latency_ms=probe.latency_ms,

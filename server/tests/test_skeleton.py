@@ -153,10 +153,9 @@ class TestCli:
                     os.environ[k] = v
         assert '"ok": true' in capsys.readouterr().out
 
-    def test_unwired_subcommands_exit_2(self, capsys):
+    def test_reap_still_placeholder(self, capsys):
         from tester_agent.cli import main
 
-        # init-db 已由 WP-02 接线；reap/backup 仍为占位
+        # backup 已由 WP-X2 接线；reap 仍为排障占位
         assert main(["reap"]) == 2
-        assert main(["backup"]) == 2
         assert "WP-23" in capsys.readouterr().err

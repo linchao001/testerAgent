@@ -485,7 +485,7 @@ CREATE TABLE workspace (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  kb_config   TEXT NOT NULL DEFAULT '{}',   -- JSON: {mode:'sdk'|'service', target, kb_id, options}
+  kb_config   TEXT NOT NULL DEFAULT '{}',   -- JSON: {kb_id, knowledge_dir?, create_knowledge_base?, options}；同进程嵌入 ReMe（已废除 mode/target/service）
   created_at  TEXT NOT NULL,
   deleted_at  TEXT
 );
@@ -1444,11 +1444,11 @@ class Entry(BaseModel):
     raw: dict                      # ReMe 原始字段，适配层外不消费
 
 class ReMeReaderFactory:
-    async def for_workspace(self, kb_config: dict) -> ReMeReader:
-        """按 (target, kb_id) 缓存实例；SDK/HTTP 两种实现实现同一 Protocol。"""
+    async def for_workspace(self, workspace_id: str, kb_config: dict) -> ReMeReader:
+        """按 workspace_id 缓存嵌入实例；唯一实现为 adapters/reme_sdk.py。"""
 ```
 
-SDK 适配（S1 前为唯一优先实现）放 `adapters/reme_sdk.py`；若 S1 确认只能走服务模式，新增 `reme_http.py`，工厂按 kb_config.mode 选择。**Reader 不持有任何写方法**，从类型上消灭图内写库路径。
+一期唯一实现：同进程嵌入 `reme.ReMe`（`memory.WorkspaceMemoryPool` + `SdkReMeReader`）；HTTP `reme_http` / `mode=service` 已删除。**Reader 不持有任何写方法**，从类型上消灭图内写库路径。个人记忆与 `memory_search` 见 [reme-memory 设计](superpowers/specs/2026-09-28-reme-memory-module-design.md)。
 
 ### 9.2 ReMeWriter（只被 api/kb.py import）
 
@@ -1553,10 +1553,12 @@ class CreateWorkspaceIn(BaseModel):
     description: str = ""
     kb_config: KbConfigIn
 class KbConfigIn(BaseModel):
-    mode: Literal["sdk", "service"]
-    target: str                    # SDK 路径 / service base_url
-    kb_id: str
-    options: dict = {}
+    kb_id: str = ""
+    knowledge_bases_dir: str = ""
+    knowledge_dir: str = "knowledge"
+    create_knowledge_base: bool = False
+    options: dict = {}             # memory_search_enabled / auto_memory_interval / daily_dir …
+    # 拒绝 mode=service；嵌入 vault = data/workspaces/{workspace_id}/reme/
 class KbTestOut(BaseModel):
     ok: bool; latency_ms: int
     capabilities: ReMeCaps | None
@@ -2208,7 +2210,8 @@ case_generate b0(done) b1(started: MD已rename、DB事务未提交) ✗ 进程�
 | mistune | 用例 MD 解析 | 纯 Python 无原生依赖 |
 | json-repair | LLM JSON 容错 | |
 | pyyaml | front-matter | |
-| httpx | ReMe service 模式/export 测试 | |
+| httpx | 通用 HTTP 客户端 / export 与外部探活测试 | 非 ReMe 接入路径（嵌入式无 HTTP） |
+| reme-ai >=0.4.1.5,<0.5 | 同进程嵌入 ReMe | CI 默认 mock；真实冒烟非必跑 |
 | pytest / pytest-asyncio / anyio | 测试 | |
 | import-linter | 门禁：graph→不得 import reme_writer | CI 契约 |
 

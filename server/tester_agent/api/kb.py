@@ -2,9 +2,9 @@
 
 PRD 7 硬性要求：ReMe 写路径物理上只对 L2 暴露——本模块是全系统唯一
 import ``ReMeWriter`` 的 API 模块（dd §9.2），writer 实例经
-``app.state.kb_writer`` 注入（WP-09：``WorkspaceRoutingWriter`` 按工作区
-``kb_config`` 路由 HTTP 写入；非 service 模式仍 502），AppContext/TaskContext
-不设写字段，图/运行时不可达。
+``app.state.kb_writer`` 注入（生产为 ``PoolRoutingWriter`` → 嵌入式
+``SdkReMeWriter.save_to_knowledge``），AppContext/TaskContext 不设写字段，
+图/运行时不可达。
 
 端点：
 
@@ -262,7 +262,7 @@ async def confirm_proposal(
                     details={"proposal_id": proposal_id},
                 )
             payload = row.payload_dict()
-            # WP-09：注入工作区 id，供 WorkspaceRoutingWriter 解析 kb_config
+            # 注入工作区 id，供 PoolRoutingWriter 解析嵌入实例
             # （Protocol 仅 (token, proposal)，不扩形参）
             if isinstance(payload, dict):
                 payload = {**payload, "_workspace_id": row.workspace_id}

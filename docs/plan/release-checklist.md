@@ -36,7 +36,7 @@
 - [ ] `python -m tester_agent.cli check` → `ok: true`
 - [ ] `python -m tester_agent.cli backup <out_dir>` 产出 app.db（+ 可选 checkpoints/workspaces）
 - [ ] 模型配置已在设置页填写并可 `model/test`（或接受空 key 首启引导）
-- [ ] 工作区已配置 ReMe `mode=service` 且 `kb/test` 能力位可读（无真实 ReMe 时可跳过联调）
+- [ ] 工作区已配置嵌入式 ReMe（`kb_id` + 可选 `options`）且 `kb/test` 可读（无真实 `reme-ai` 时可跳过联调）
 
 ## 4. 文档同步
 

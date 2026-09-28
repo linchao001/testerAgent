@@ -29,7 +29,7 @@ from tester_agent.store.models import (
 WS = "ws-pe"
 CONV = "conv-pe"
 TASK = "task-pe"
-KB = {"mode": "sdk", "target": "/tmp/reme", "kb_id": "kb-1", "options": {}}
+KB = {"kb_id": "kb-1", "options": {}}
 
 
 def _settings(tmp_path: Path) -> Settings:

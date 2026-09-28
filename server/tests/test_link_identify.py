@@ -374,7 +374,7 @@ async def make_stack(tmp_path):
 
         await WorkspaceDAO(db).create(
             WorkspaceRow.create(id=WS, name="ws-name",
-                                kb_config={"kb_id": "KB1", "mode": "sdk"})
+                                kb_config={"kb_id": "KB1", "options": {}})
         )
         await db.aexecute(
             "INSERT INTO conversation (id, workspace_id, title, created_at, updated_at) "

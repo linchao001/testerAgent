@@ -9,7 +9,6 @@ from pathlib import Path
 from langchain_core.tools import BaseTool
 
 from .bash_persistent import PersistentBashManager, make_bash_tool
-from .capabilities import make_capability_tools
 from .sandbox import WorkspaceSandbox
 from .shell_backend import detect_shell_backend
 from .str_replace_editor import make_str_replace_editor_tool
@@ -33,6 +32,7 @@ class ToolBuildContext:
     runtime_config: dict
     cancel_event: asyncio.Event | None = None
     bash_manager: PersistentBashManager | None = None
+    memory_manager: object | None = None
 
 
 def build_case_designer_tools(
@@ -57,7 +57,14 @@ def build_case_designer_tools(
         ),
         make_str_replace_editor_tool(sandbox, max_output_chars=max_chars),
     ]
+    mem = ctx.memory_manager
+    if mem is not None and getattr(mem, "memory_search_enabled", lambda: False)():
+        from ..memory.tools import make_memory_search_tool
+
+        tools.append(make_memory_search_tool(mem))
     if include_capabilities:
+        from .capabilities import make_capability_tools
+
         tools.extend(make_capability_tools())
     if include_orchestration:
         from .orchestration import make_orchestration_tools

@@ -60,7 +60,7 @@ from tester_agent.store.models import (
 from tester_agent.store.workspace_files import FileStore
 
 WS, CONV, TASK = "ws-x2", "conv-x2", "task-x2"
-KB = {"mode": "sdk", "target": "/tmp/reme", "kb_id": "kb-1", "options": {}}
+KB = {"kb_id": "kb-1", "options": {}}
 
 
 def _run(coro):

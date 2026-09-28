@@ -71,7 +71,7 @@ def stack(tmp_path):
     async def _seed():
         await WorkspaceDAO(db).create(
             WorkspaceRow.create(
-                id=WS, name="x1", kb_config={"kb_id": "KB1", "mode": "sdk"}
+                id=WS, name="x1", kb_config={"kb_id": "KB1", "options": {}}
             )
         )
         await db.aexecute(

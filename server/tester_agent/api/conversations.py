@@ -220,6 +220,7 @@ async def send_message(
             conv=conv,
             file_store=request.app.state.file_store,
             user_message=msg,
+            memory_pool=getattr(request.app.state, "memory_pool", None),
         )
         assistant_out = _msg_out(assistant)
         await conv_dao.touch(conversation_id)

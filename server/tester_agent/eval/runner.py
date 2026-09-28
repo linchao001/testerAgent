@@ -134,7 +134,7 @@ async def run_case(
         db = Database(db_path)
         await WorkspaceDAO(db).create(
             WorkspaceRow.create(
-                id=_WS, name="eval", kb_config={"kb_id": "EVAL-KB", "mode": "sdk"}
+                id=_WS, name="eval", kb_config={"kb_id": "EVAL-KB", "options": {}}
             )
         )
         await db.aexecute(

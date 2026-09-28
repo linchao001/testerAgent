@@ -16,7 +16,7 @@ CREATE TABLE workspace (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  kb_config   TEXT NOT NULL DEFAULT '{}',   -- JSON: {mode:'sdk'|'service', target, kb_id, options}
+  kb_config   TEXT NOT NULL DEFAULT '{}',   -- JSON: {kb_id, knowledge_dir?, options?}；嵌入 vault=data/workspaces/{id}/reme/
   created_at  TEXT NOT NULL,
   deleted_at  TEXT
 );

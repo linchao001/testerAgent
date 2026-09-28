@@ -53,7 +53,13 @@ from tester_agent.store.workspace_files import FileStore
 
 WS, CONV, TASK = "ws-1", "conv-1", "task-1"
 C1 = "h2-1"
-KB_CONFIG = {"mode": "sdk", "target": "/tmp/reme", "kb_id": "kb-1", "options": {}}
+KB_CONFIG = {
+    "kb_id": "kb-1",
+    "knowledge_bases_dir": "",
+    "knowledge_dir": "knowledge",
+    "create_knowledge_base": False,
+    "options": {},
+}
 
 
 def _run(coro):

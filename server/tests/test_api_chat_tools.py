@@ -20,7 +20,13 @@ from tester_agent.store.models import WorkspaceDAO, WorkspaceRow
 from tester_agent.tools.trace import ToolTraceEntry
 
 WS = "ws-chat-tools"
-KB_CONFIG = {"mode": "sdk", "target": "/tmp/reme", "kb_id": "kb-1", "options": {}}
+KB_CONFIG = {
+    "kb_id": "kb-1",
+    "knowledge_bases_dir": "",
+    "knowledge_dir": "knowledge",
+    "create_knowledge_base": False,
+    "options": {},
+}
 
 
 def _settings(tmp_path: Path) -> Settings:

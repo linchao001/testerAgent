@@ -9,6 +9,8 @@
 
 > v0.3 变更摘要（WP-X2）：① §8 S1~S7 全部写入一期结论；② §9 开放问题与 PRD v0.7 对齐（Q1/Q2/Q6/Q7/Q11/Q12 closed）；③ 备份 CLI / 导出·提案发布门禁见 detailed-design §19.5 与 `docs/plan/release-checklist.md`。
 >
+> **嵌入式 ReMe（同日修订）**：S1/D18 改为同进程嵌入；HTTP `service` 删除；目录见 §6 `memory/` + `adapters/reme_sdk.py`；细节 [reme-memory 设计](superpowers/specs/2026-09-28-reme-memory-module-design.md)。
+>
 > **实现级契约**：[detailed-design.md v0.4](file:///D:/code/github/testerAgent/docs/detailed-design.md) 已对齐 Plan-Execute（控制环 §7、ConfirmIn.gate_kind、SessionPage、迁移 004）。
 >
 > v0.2 变更摘要：针对 v0.1 两轮架构评审（共 39 条意见，处理记录见[附录 A](#附录-a评审意见处理记录)）修订，主要变化：
@@ -48,32 +50,40 @@
 │   REST 接口 + SSE 事件推送 + 确认令牌签发                  │
 │   TaskRegistry：任务互斥锁 / 取消令牌 / 运行态注册表        │
 ├─────────────────────────────────────────────────────────┤
-│ L3 编排层  server/graph (LangGraph)                      │
+│ L3 编排层  server/graph + runtime (LangGraph)            │
 │   控制环：plan→dispatch→execute_step→await_human→reflect │
 │   能力：intake / link_identify / point_write / case_generate │
-│   子管线：精准检索（多路召回→过滤→重排→段落抽取→预算截断）  │
-│   Runtime：Runner（图执行宿主）+ EventBus（进程内发布订阅） │
+│   子管线：精准检索；对话 tool_agent（可挂 memory_search）   │
+│   Runtime：Runner + EventBus                             │
 ├─────────────────────────────────────────────────────────┤
-│ L4 接入层  server/adapters                               │
-│   ReMeAdapter（只读）/ ReMeWriter（确认令牌门禁）/          │
-│   LLMClient（DeepSeek，超时/重试/降级）/ ExportService      │
+│ L4 记忆层  server/memory                                 │
+│   WorkspaceMemoryPool / ReMeMemoryManager（一工作区一嵌入） │
+│   个人记忆（daily/digest）+ 可选共享 KB 挂载；auto_memory  │
+│   对话工具 memory_search；**不**暴露 save_to_knowledge     │
 ├─────────────────────────────────────────────────────────┤
-│ L5 存储层  server/store                                  │
-│   SQLite（WAL：元数据/轨迹/配置/事件）+ data/（用例MD/快照） │
+│ L5 接入层  server/adapters                               │
+│   SdkReMeReader（只读，供 L3）/ SdkReMeWriter（仅 L2 confirm）│
+│   LLMClient（DeepSeek）/ ExportService                   │
+├─────────────────────────────────────────────────────────┤
+│ L6 存储层  server/store + data/                          │
+│   SQLite（WAL：元数据/轨迹/配置/事件）                     │
+│   文件：用例 MD / 快照 / reme vault（data/workspaces/…）   │
 │   Reconciler：启动与定时对账（DB 行 ↔ 文件）               │
 └─────────────────────────────────────────────────────────┘
 ```
 
-关键约束：**L3 编排层仅持有 `ReMeAdapter`（只读接口），`ReMeWriter` 只暴露给 L2 的专用确认端点**。从代码结构上保证 agent 链路无法触达知识库写入（PRD 7 硬性要求）。
+分层口径：L1→L6 按**调用与信任边界**自上而下——交互、门禁 API、编排、记忆能力本体、协议适配、持久化。`memory/` 单独成 L4，是因为它负责嵌入生命周期与个人/共享记忆语义；`adapters/reme_sdk` 只把同一嵌入实例适配为冻结的 `ReMeReader`/`ReMeWriter` Protocol（L5），不承担记忆业务本身。
+
+关键约束：**L3 编排层仅持有只读 `ReMeReader`，`ReMeWriter` 只暴露给 L2 的专用确认端点**；对话可挂 `memory_search`，不可挂 `save_to_knowledge`。从代码结构上保证 agent 链路无法触达知识库写入（PRD 7 硬性要求）。
 
 ### 2.1 部署与并发约束（一期显式约束，不提前做分布式）
 
 | 约束 | 说明 |
 |---|---|
-| 单进程单 worker | 后端以 uvicorn 单 worker 运行；图执行、EventBus、TaskRegistry 均为进程内组件，不做跨进程协调。部署脚本与文档写死该约束 |
+| 单进程单 worker | 后端以 uvicorn 单 worker 运行；图执行、EventBus、TaskRegistry、**嵌入式 ReMe 实例池**均为进程内组件，不做跨进程协调。部署脚本与文档写死该约束 |
 | 并发任务 | 允许多任务排队/交错挂起，但**同一时刻同一 task 只允许一个 Runner 持有执行权**（§4.5 互斥）；不同 task 可并发，LLM/检索并发受适配器信号量限制 |
-| 重启语义 | 进程重启不保证节点执行中的内存状态；恢复依赖最近一次成功的批次级持久化（§4.2③），由 Reaper 改判无主任务（§4.5） |
-| 无后台调度器 | 不引入 celery/APScheduler；挂起超时检查、对账在启动时与 API 请求触达时惰性执行 |
+| 重启语义 | 进程重启不保证节点执行中的内存状态；恢复依赖最近一次成功的批次级持久化（§4.2③），由 Reaper 改判无主任务（§4.5）；嵌入 ReMe 随进程启停，vault 在工作区目录持久化 |
+| 无后台调度器 | 不引入 celery/APScheduler；挂起超时检查、对账在启动时与 API 请求触达时惰性执行；一期无 dream/daily_paper cron |
 
 ---
 
@@ -89,7 +99,7 @@
 |---|---|---|
 | id | TEXT PK | uuid |
 | name / description | TEXT | |
-| kb_config | TEXT(JSON) | 本工作区绑定的 ReMe 知识库连接（SDK 路径/服务地址、库标识） |
+| kb_config | TEXT(JSON) | 本工作区嵌入式 ReMe 配置：`{kb_id, knowledge_dir?, create_knowledge_base?, options}`；vault=`data/workspaces/{id}/reme/`（已废除 `mode`/`target`/HTTP service） |
 | created_at / deleted_at | TEXT | 软删除：删除工作区先置 deleted_at，文件清理走保留期任务（§3.4） |
 
 **agent（智能体；一期仅内置一条"用例智能体"，表结构为多智能体预留）**
@@ -301,6 +311,7 @@
 data/
 └── workspaces/
     └── {workspace_id}/            # 工作区级隔离
+        ├── reme/                  # 嵌入式 ReMe vault（daily/digest/knowledge…）
         └── {task_id}/
             ├── requirement.md     # 需求原文副本
             ├── snapshots/         # 上下文快照全文（JSONL，见 4.4②）
@@ -337,7 +348,7 @@ testcase.file_path、context_snapshot.snapshot_path 均存相对 `data/` 的路�
 | 层面 | 机制 |
 |---|---|
 | 数据 | 会话/任务及其下游产物均挂 workspace_id（且强制 `workspace.deleted_at IS NULL` 过滤），DAO 层不提供无工作区参数的查询方法 |
-| 检索 | `ReMeAdapter` 按工作区的 `kb_config` 实例化并缓存于任务上下文，任务运行期内只能访问本工作区的知识库，不存在跨库检索路径 |
+| 检索 | 按工作区 `kb_config` 从 `WorkspaceMemoryPool` 取嵌入实例 → `SdkReMeReader`；任务运行期内只能访问本工作区知识库，不存在跨库检索路径 |
 | 文件 | 用例 MD 与快照按 `data/workspaces/{workspace_id}/` 目录物理隔离 |
 
 **删除级联**：DELETE 工作区 = 软删除 + 校验无 running/waiting 任务；DB 下游行随查询过滤逻辑隔离；文件目录在保留期后由清理任务物理删除，删除失败仅记日志并在下次维护重试（不阻塞 API）。
@@ -676,30 +687,27 @@ testerAgent/
 │   └── dev.sh                   # 一键本地启动（后端 + 前端构建）
 ├── server/
 │   ├── main.py                  # FastAPI 入口，托管 web/dist（含 SPA fallback、/healthz）
-│   ├── runtime/                 # 执行模型（v0.2 新增）
+│   ├── memory/                  # L4：嵌入式 ReMe（pool/manager/tools/auto_memory）
+│   ├── runtime/                 # 执行模型（挂 L3）
 │   │   ├── runner.py            # Runner：互斥锁/心跳/取消/后台执行
 │   │   ├── bus.py               # EventBus：进程内 pub/sub
 │   │   ├── registry.py          # TaskRegistry + Reaper
+│   │   ├── chat_agent.py        # 对话 tool_agent + memory_search
 │   │   └── maintenance.py       # 对账/保留期清理等惰性任务
 │   ├── api/                     # L2：REST + SSE 路由
 │   │   ├── workspaces.py  agents.py  conversations.py  tasks.py
 │   │   ├── cases.py  kb.py  config.py  traces.py  snapshots.py
-│   ├── graph/                   # L3：LangGraph
-│   │   ├── registry.py          # agent_type → 编译图 注册表
-│   │   ├── main_graph.py        # 主图定义与 interrupt 配置
-│   │   ├── nodes/               # intake / link_identify / point_write /
-│   │   │                        #   case_generate / coverage_check（含批次游标）
-│   │   ├── retrieve/            # 检索子图：multi_query/recall/filter/
-│   │   │                        #   rerank/extract/assemble（含缓存/降级）
-│   │   └── state.py             # TaskState
+│   ├── graph/                   # L3：LangGraph 控制环 + 能力 + 检索管线
+│   │   ├── registry.py / main_graph.py / control/ / nodes/ / retrieval/
+│   │   └── state.py
 │   ├── eval/                    # 最小离线评测管线（黄金集回归）
-│   ├── adapters/                # L4
-│   │   ├── reme_reader.py       # ReMeAdapter：search/list_tree（只读）+ 索引摘要镜像缓存
-│   │   ├── reme_writer.py       # ReMeWriter：仅被 kb.py confirm 端点引用
+│   ├── adapters/                # L5：协议适配
+│   │   ├── reme.py              # Protocol / Caps / Factory / Writer Protocol
+│   │   ├── reme_sdk.py          # SdkReMeReader / SdkReMeWriter / PoolRoutingWriter
 │   │   ├── llm.py               # DeepSeek 客户端：超时/重试/限流/结构化修复
 │   │   └── exporter.py          # MD zip / Excel 汇总（hash 校验）
-│   ├── store/                   # L5
-│   │   ├── db.py                # SQLite 连接（WAL）与迁移（首版 schema_version 轻量 DDL）
+│   ├── store/                   # L6
+│   │   ├── db.py                # SQLite 连接（WAL）与迁移
 │   │   ├── models.py            # 3.1 各表 DAO（强制 workspace 过滤）
 │   │   └── workspace_files.py   # 原子写入/版本目录/快照偏移读/对账
 │   └── prompts/                 # 各节点提示词模板（可被 agent 配置覆盖）
@@ -711,7 +719,7 @@ testerAgent/
 │   │   │                        #   TraceTree / DiffList
 │   │   └── api/                 # fetch 封装（错误模型/分页）+ SSE 客户端（Last-Event-ID）
 │   └── package.json
-└── data/                        # 运行时生成：workspaces/{workspace_id}/...（见 3.3）
+└── data/                        # workspaces/{id}/reme/ + {task_id}/…（见 3.3）
 ```
 
 迁移与运维约定（R35）：DB schema 变更走带 `schema_version` 的轻量 DDL 迁移（一期不引 alembic）；`data/` 根目录可由环境变量配置；`/healthz` 探活并报告 DB、ReMe、模型三项依赖状态；SPA history 路由统一 fallback 到 index.html。本地服务不设鉴权（单机单用户），监听地址默认仅绑定 127.0.0.1；ReMe 返回内容作为数据注入 prompt（不作为指令执行），提示词中明确知识块引用边界。
@@ -739,6 +747,7 @@ testerAgent/
 | D15 | 事件先落 task_event 表再广播，SSE 以 Last-Event-ID 补发 | 断线/重启/多标签页可靠回放 | US6 / R12 |
 | D16 | 一期内置最小离线 eval 管线（复用图组件，黄金集冒烟） | 上下文精准策略的任何调优需可度量、可回归 | 2.2 / Q4 / R5 |
 | D17 | 内置工具走 LangChain Tool + LangGraph ToolNode 子图；不替换用例主图 | 与 harness 语义对齐；对话/产线共享运行时；ReMeWriter 不可达 | 内置工具规格 |
+| D18 | 同进程嵌入 ReMe（一工作区一实例）；废除 HTTP service；对话仅 `memory_search` | 与 QwenPaw 对齐；单 worker + vault 隔离；PRD 7 写门禁不变 | 7 / US1.3 |
 
 ---
 
@@ -746,7 +755,7 @@ testerAgent/
 
 | # | 事项 | 状态 | 一期结论 |
 |---|---|---|---|
-| S1 | ReMe 三能力（metadata_filter / entry_version / passage_api）与接入模式 | **done** | 优先 HTTP `service`；caps=`(False, False, True)`；启用 IndexMirror + `local_entry_version`（h-sha256）；见 handoff [SP-1]/[WP-09] |
+| S1 | ReMe 三能力（metadata_filter / entry_version / passage_api）与接入模式 | **done（修订）** | **一期默认同进程嵌入** `reme.ReMe`（见 [reme-memory 设计](superpowers/specs/2026-09-28-reme-memory-module-design.md)）；HTTP `service` 已删除；caps 仍 `(False, False, True)` + IndexMirror / `local_entry_version`；handoff [Reme-Memory] 取代 WP-09 HTTP 交付 |
 | S2 | langgraph interrupt / Command(resume) / 派生 thread | **done (GO)** | 走图原生路径；`run_from_stage` 仅预留接口；见 handoff [SP-2] |
 | S3 | 需求最大体量下 intake 实测 | **deferred** | 一期未做真实超大文档实测。已落地：条款化 + 按需读原文；link_identify 需求摘要 N=500 占位。超大需求章节分批确认 → 二期运维标定 |
 | S4 | 索引摘要体量 / 200 条硬上限 | **partial** | 硬上限 + `budget_warning` 已落地；未做真实索引体量实测。超限二级索引策略 → 二期 |

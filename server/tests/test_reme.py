@@ -581,28 +581,30 @@ class CountingBuilder:
 
 
 class TestReaderFactory:
-    async def test_cache_by_target_and_kb_id(self):
+    async def test_cache_by_workspace_id(self):
         factory = ReMeReaderFactory()
         builder = CountingBuilder()
         factory.register("sdk", builder)
-        cfg = {"mode": "sdk", "target": "/data/reme", "kb_id": "kb-1", "options": {}}
+        cfg = {"kb_id": "kb-1", "options": {}}
 
-        r1 = await factory.for_workspace(cfg)
-        r2 = await factory.for_workspace(dict(cfg, options={"x": 1}))
-        assert r1 is r2  # options 不进缓存键（dd §9.1：(target, kb_id)）
+        r1 = await factory.for_workspace("ws-a", cfg)
+        r2 = await factory.for_workspace("ws-a", dict(cfg, options={"x": 1}))
+        assert r1 is r2
         assert builder.calls == 1
-        # 不同 kb_id → 不同实例
-        r3 = await factory.for_workspace(dict(cfg, kb_id="kb-2"))
+        r3 = await factory.for_workspace("ws-b", dict(cfg, kb_id="kb-2"))
         assert r3 is not r1
         assert builder.calls == 2
         assert builder.configs[1]["kb_id"] == "kb-2"
+        assert builder.configs[0]["_workspace_id"] == "ws-a"
 
     async def test_concurrent_same_key_single_flight(self):
         factory = ReMeReaderFactory()
         builder = CountingBuilder()
         factory.register("sdk", builder)
-        cfg = {"mode": "sdk", "target": "t", "kb_id": "kb"}
-        results = await asyncio.gather(*[factory.for_workspace(cfg) for _ in range(4)])
+        cfg = {"kb_id": "kb", "options": {}}
+        results = await asyncio.gather(
+            *[factory.for_workspace("ws1", cfg) for _ in range(4)]
+        )
         assert builder.calls == 1
         assert all(r is results[0] for r in results)
 
@@ -610,57 +612,64 @@ class TestReaderFactory:
         "cfg",
         [
             {},
-            {"target": "t", "kb_id": "k"},
-            {"mode": "sdk", "kb_id": "k"},
-            {"mode": "sdk", "target": "t"},
-            {"mode": "", "target": "t", "kb_id": "k"},
-            {"mode": "sdk", "target": "  ", "kb_id": "k"},
-            {"mode": 123, "target": "t", "kb_id": "k"},
+            {"target": "t"},
+            {"kb_id": 123},
         ],
     )
     async def test_invalid_config(self, cfg):
         factory = ReMeReaderFactory()
         factory.register("sdk", CountingBuilder())
         with pytest.raises(ValidationError):
-            await factory.for_workspace(cfg)
+            await factory.for_workspace("ws1", cfg)
+
+    async def test_reject_service_mode(self):
+        factory = ReMeReaderFactory()
+        factory.register("sdk", CountingBuilder())
+        with pytest.raises(ValidationError) as exc:
+            await factory.for_workspace(
+                "ws1",
+                {"mode": "service", "target": "http://x", "kb_id": "k"},
+            )
+        assert exc.value.details == {"mode": "service"}
+        with pytest.raises(ValidationError):
+            await factory.probe(
+                "ws1", {"mode": "service", "target": "t", "kb_id": "k"}
+            )
 
     async def test_non_dict_config(self):
         factory = ReMeReaderFactory()
         with pytest.raises(ValidationError):
-            await factory.for_workspace("not-a-dict")  # type: ignore[arg-type]
+            await factory.for_workspace("ws1", "not-a-dict")  # type: ignore[arg-type]
 
-    async def test_unregistered_mode(self):
+    async def test_unregistered_sdk_builder(self):
         factory = ReMeReaderFactory()
         with pytest.raises(ValidationError) as exc:
-            await factory.for_workspace(
-                {"mode": "service", "target": "http://x", "kb_id": "k"}
-            )
-        assert exc.value.details == {"mode": "service"}
+            await factory.for_workspace("ws1", {"kb_id": "k", "options": {}})
+        assert exc.value.details == {"mode": "sdk"}
 
     async def test_builder_failure_not_cached(self):
         factory = ReMeReaderFactory()
         builder = CountingBuilder(fail=True)
         factory.register("sdk", builder)
-        cfg = {"mode": "sdk", "target": "t", "kb_id": "k"}
+        cfg = {"kb_id": "k", "options": {}}
         with pytest.raises(KbUnreachable):
-            await factory.for_workspace(cfg)
+            await factory.for_workspace("ws1", cfg)
         with pytest.raises(KbUnreachable):
-            await factory.for_workspace(cfg)
-        assert builder.calls == 2  # 失败不落缓存，允许重试
+            await factory.for_workspace("ws1", cfg)
+        assert builder.calls == 2
 
     async def test_builder_failure_then_success(self):
         factory = ReMeReaderFactory()
         builder = CountingBuilder(fail=True)
         factory.register("sdk", builder)
-        cfg = {"mode": "sdk", "target": "t", "kb_id": "k"}
+        cfg = {"kb_id": "k", "options": {}}
         with pytest.raises(KbUnreachable):
-            await factory.for_workspace(cfg)
+            await factory.for_workspace("ws1", cfg)
         builder._fail = False
-        reader = await factory.for_workspace(cfg)
+        reader = await factory.for_workspace("ws1", cfg)
         assert reader is builder.last_reader
         assert builder.calls == 2
-        # 成功后缓存生效
-        assert await factory.for_workspace(cfg) is reader
+        assert await factory.for_workspace("ws1", cfg) is reader
         assert builder.calls == 2
 
 
@@ -669,26 +678,20 @@ class TestFactoryProbe:
         factory = ReMeReaderFactory()
         builder = CountingBuilder()
         factory.register("sdk", builder)
-        cfg = {"mode": "sdk", "target": "t", "kb_id": "k"}
-        result = await factory.probe(cfg)
+        cfg = {"kb_id": "k", "options": {}}
+        result = await factory.probe("ws1", cfg)
         assert isinstance(result, CapsProbe)
         assert result.caps == ALL_CAPS
         assert result.latency_ms >= 0
-        await factory.probe(cfg)
-        assert builder.calls == 2  # probe 不走缓存
-        # probe 不填充 for_workspace 缓存：首次 for_workspace 仍需构造
-        reader = await factory.for_workspace(cfg)
+        await factory.probe("ws1", cfg)
+        assert builder.calls == 2
+        reader = await factory.for_workspace("ws1", cfg)
         assert builder.calls == 3
-        assert await factory.for_workspace(cfg) is reader  # 之后命中缓存
+        assert await factory.for_workspace("ws1", cfg) is reader
         assert builder.calls == 3
 
     async def test_probe_failure_propagates(self):
         factory = ReMeReaderFactory()
         factory.register("sdk", CountingBuilder(fail=True))
         with pytest.raises(KbUnreachable):
-            await factory.probe({"mode": "sdk", "target": "t", "kb_id": "k"})
-
-    async def test_probe_unregistered_mode(self):
-        factory = ReMeReaderFactory()
-        with pytest.raises(ValidationError):
-            await factory.probe({"mode": "service", "target": "t", "kb_id": "k"})
+            await factory.probe("ws1", {"kb_id": "k", "options": {}})

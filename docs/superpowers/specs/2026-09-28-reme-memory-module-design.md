@@ -3,7 +3,7 @@
 | 项 | 内容 |
 |---|---|
 | 日期 | 2026-09-28 |
-| 状态 | 设计已定稿（待用户审阅后写实现计划） |
+| 状态 | **已实现（M1–M4）**；CI 默认 mock 嵌入层 |
 | 对应 | [PRD](../../PRD.md) / [tech-design](../../tech-design.md) / [detailed-design](../../detailed-design.md) |
 | 参考实现 | QwenPaw `agents/memory/`（`ReMeLightMemoryManager` + `reme_config`） |
 | 取代 | SP-1「优先 HTTP / 默认不嵌入」；删除 `adapters/reme_http.py` 及 service 模式 |

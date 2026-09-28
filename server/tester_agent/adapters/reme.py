@@ -4,9 +4,8 @@ WP-08 范围（契约层）：冻结 ``ReMeCaps`` / ``Entry`` / ``IndexTree`` /
 ``ReMeReader`` Protocol、``plan_fallbacks`` / ``IndexMirror`` /
 ``ReMeReaderFactory`` 骨架。
 
-WP-09 真实适配见 ``adapters/reme_http.py``（``register_service_builder`` +
-``HttpReMeReader`` / ``HttpReMeWriter`` / ``WorkspaceRoutingWriter``）；
-本模块仍不直接发起 ReMe HTTP 调用。
+WP-09 曾用 HTTP；现改为嵌入式 SDK（``adapters/reme_sdk.py`` +
+``memory.WorkspaceMemoryPool``）。本模块仍不直接发起远程 HTTP。
 
 dd 缺口补型（交接单已登记，不碰冻结字段）：§9.1 引用了 ``IndexTree`` 但未给类
 定义，按其 docstring（title/一句话/entry_id/version/归属）与 tech-design §4.3
@@ -400,11 +399,13 @@ def _flatten_tree(tree: IndexTree) -> list[tuple[str, IndexEntryMeta]]:
     return out
 
 
-# ---------- §9.1 工厂：按 (target, kb_id) 缓存实例 ----------
+# ---------- §9.1 工厂：按 workspace_id 缓存实例 ----------
 
-# async builder：kb_config dict（KbConfigIn 形态 {mode,target,kb_id,options}）→ reader。
+# async builder：kb_config dict（含内部 ``_workspace_id``）→ reader。
 # builder 内部负责连接与能力探测，返回的 reader 已带缓存好的 caps。
 ReaderBuilder = Callable[[dict], Awaitable[ReMeReader]]
+
+_SDK_MODE = "sdk"
 
 
 class CapsProbe(BaseModel):
@@ -415,80 +416,93 @@ class CapsProbe(BaseModel):
 
 
 class ReMeReaderFactory:
-    """reader 实例工厂（dd §9.1）。
+    """reader 实例工厂（嵌入式 SDK）。
 
-    WP-08 只提供缓存/校验骨架与测试 builder 注册口；WP-09 通过 ``register``
-    注册 sdk（及可能的 service）真实 builder。缓存键固定为 (target, kb_id)
-    （dd §9.1），同键并发构造单飞；builder 抛错不落缓存，允许下次重试。
+    缓存键为 ``workspace_id``；默认只使用 ``sdk`` builder。``mode=service``
+    已废除。builder 抛错不落缓存，允许下次重试。
     """
 
     def __init__(self, builders: Mapping[str, ReaderBuilder] | None = None) -> None:
         self._builders: dict[str, ReaderBuilder] = dict(builders or {})
-        self._cache: dict[tuple[str, str], ReMeReader] = {}
-        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._cache: dict[str, ReMeReader] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def register(self, mode: str, builder: ReaderBuilder) -> None:
-        """注册/替换 mode 的 builder（WP-09 接线用；测试也走此口注入替身）。"""
+        """注册/替换 mode 的 builder（生产只注册 sdk；测试可注入替身）。"""
         self._builders[mode] = builder
 
-    async def for_workspace(self, kb_config: dict) -> ReMeReader:
-        mode, target, kb_id = _validate_kb_config(kb_config)
-        key = (target, kb_id)
+    async def invalidate(self, workspace_id: str) -> None:
+        self._cache.pop(workspace_id, None)
+
+    async def for_workspace(self, workspace_id: str, kb_config: dict) -> ReMeReader:
+        if not isinstance(workspace_id, str) or not workspace_id.strip():
+            raise ValidationError(
+                "workspace_id 必填", details={"workspace_id": workspace_id}
+            )
+        _validate_kb_config(kb_config)
+        key = workspace_id.strip()
         cached = self._cache.get(key)
         if cached is not None:
             return cached
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
-            cached = self._cache.get(key)  # 双检
+            cached = self._cache.get(key)
             if cached is not None:
                 return cached
-            builder = self._builders.get(mode)
+            builder = self._builders.get(_SDK_MODE)
             if builder is None:
                 raise ValidationError(
-                    f"知识库接入模式暂不可用: {mode!r}（真实适配在后续版本注册）",
-                    details={"mode": mode},
+                    f"知识库接入模式暂不可用: {_SDK_MODE!r}",
+                    details={"mode": _SDK_MODE},
                 )
-            reader = await builder(kb_config)
+            cfg = dict(kb_config)
+            cfg["_workspace_id"] = key
+            reader = await builder(cfg)
             self._cache[key] = reader
             return reader
 
-    async def probe(self, kb_config: dict) -> CapsProbe:
-        """一次性连接探测（dd §8.4：连接测试时探测），不写实例缓存。
-
-        builder 成功构造即视为连通（探测在 builder 内完成）；失败原样抛出，
-        由端点边界翻译为 KB_UNREACHABLE/424（WP-25）。
-        """
-        mode, _target, _kb_id = _validate_kb_config(kb_config)
-        builder = self._builders.get(mode)
+    async def probe(self, workspace_id: str, kb_config: dict) -> CapsProbe:
+        """一次性连接探测，不写实例缓存。"""
+        if not isinstance(workspace_id, str) or not workspace_id.strip():
+            raise ValidationError(
+                "workspace_id 必填", details={"workspace_id": workspace_id}
+            )
+        _validate_kb_config(kb_config)
+        builder = self._builders.get(_SDK_MODE)
         if builder is None:
             raise ValidationError(
-                f"知识库接入模式暂不可用: {mode!r}（真实适配在后续版本注册）",
-                details={"mode": mode},
+                f"知识库接入模式暂不可用: {_SDK_MODE!r}",
+                details={"mode": _SDK_MODE},
             )
+        cfg = dict(kb_config)
+        cfg["_workspace_id"] = workspace_id.strip()
         loop = asyncio.get_running_loop()
         t0 = loop.time()
-        reader = await builder(kb_config)
+        reader = await builder(cfg)
         latency_ms = int((loop.time() - t0) * 1000)
         return CapsProbe(caps=reader.caps, latency_ms=latency_ms)
 
 
-def _validate_kb_config(kb_config: dict) -> tuple[str, str, str]:
+def _validate_kb_config(kb_config: dict) -> None:
     if not isinstance(kb_config, dict):
-        raise ValidationError("kb_config 必须为对象", details={"got": type(kb_config).__name__})
-    mode = kb_config.get("mode")
-    target = kb_config.get("target")
-    kb_id = kb_config.get("kb_id")
-    missing = [
-        name
-        for name, val in (("mode", mode), ("target", target), ("kb_id", kb_id))
-        if not isinstance(val, str) or not val.strip()
-    ]
-    if missing:
         raise ValidationError(
-            "kb_config 缺少必填项或取值非法", details={"missing": missing}
+            "kb_config 必须为对象", details={"got": type(kb_config).__name__}
         )
-    assert isinstance(mode, str) and isinstance(target, str) and isinstance(kb_id, str)
-    return mode, target, kb_id
+    mode = kb_config.get("mode")
+    if mode == "service":
+        raise ValidationError(
+            "mode=service 已废除，请使用嵌入式 sdk",
+            details={"mode": mode},
+        )
+    if "kb_id" not in kb_config:
+        raise ValidationError(
+            "kb_config 缺少必填项或取值非法", details={"missing": ["kb_id"]}
+        )
+    kb_id = kb_config.get("kb_id")
+    if not isinstance(kb_id, str):
+        raise ValidationError(
+            "kb_config 缺少必填项或取值非法", details={"missing": ["kb_id"]}
+        )
 
 
 # ---------- §9.2 ReMeWriter（只被 api/kb.py import；L3 图/运行时禁入） ----------
@@ -515,14 +529,14 @@ class ReMeWriter(Protocol):
 
 
 class UnavailableWriter:
-    """默认写实现：WP-09 真实适配未注册前，写入一律不可达（502）。
+    """默认写实现：``app.state.kb_writer`` 未注入时写入一律不可达（502）。
 
-    与 dd §9.2 的偏离（交接单登记）：§9.2 形参为 ``OneTimeToken``/``KbPayload``
-    具名类型，v1 落为 ``str``/``dict``（令牌明文串与提案 payload），语义不变。
+    与 dd §9.2 的偏离：§9.2 形参为 ``OneTimeToken``/``KbPayload`` 具名类型，
+    v1 落为 ``str``/``dict``（令牌明文串与提案 payload），语义不变。
     """
 
     async def write_proposal(self, token: str, proposal: dict) -> WriteResult:
         raise KbUnreachable(
-            "ReMe 写入适配未注册（真实适配在后续版本接入）",
+            "ReMe 写入适配未注册",
             details={"reason": "writer_not_registered"},
         )

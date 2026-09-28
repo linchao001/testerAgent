@@ -85,9 +85,10 @@ export type ConfirmOut = {
 }
 
 export type KbConfig = {
-  mode: 'sdk' | 'service'
-  target: string
   kb_id: string
+  knowledge_bases_dir?: string
+  knowledge_dir?: string
+  create_knowledge_base?: boolean
   options?: Record<string, unknown>
 }
 

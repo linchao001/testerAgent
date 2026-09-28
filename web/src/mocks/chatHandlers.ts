@@ -10,9 +10,8 @@ let workspace: Workspace = {
   name: '默认工作区',
   description: '',
   kb_config: {
-    mode: 'service',
-    target: 'http://127.0.0.1:8182',
     kb_id: 'zhb_kb',
+    options: {},
   },
   created_at: now(),
 }
@@ -49,11 +48,10 @@ export function resetChatMockState() {
     id: 'ws-f1',
     name: '默认工作区',
     description: '',
-    kb_config: {
-      mode: 'service',
-      target: 'http://127.0.0.1:8182',
-      kb_id: 'zhb_kb',
-    },
+      kb_config: {
+        kb_id: 'zhb_kb',
+        options: {},
+      },
     created_at: now(),
   }
   conversationId = 'conv-f1'

@@ -2,9 +2,9 @@
 
 基于知识库（ReMe）的测试用例生成 Agent。运行范式：**动态 Plan-Execute 为主干 + Reflexion 反思校验 + 工具/子任务**；人机确认可配置（默认开启链路/测试点/评审门禁）；前端以**对话会话（Session）**为主交互。
 
-一期约束：**单机单用户、单进程单 worker**（SQLite + 文件系统双事实源）。
+一期约束：**单机单用户、单进程单 worker**（SQLite + 文件系统双事实源）。知识库与个人记忆经 **同进程嵌入 ReMe**（`memory/` + `adapters/reme_sdk.py`）；共享 KB 写入仍须用户确认。设计见 [`docs/superpowers/specs/2026-09-28-reme-memory-module-design.md`](docs/superpowers/specs/2026-09-28-reme-memory-module-design.md)。
 
-设计见 [`docs/superpowers/specs/2026-09-28-plan-execute-reflexion-design.md`](docs/superpowers/specs/2026-09-28-plan-execute-reflexion-design.md)。
+编排范式见 [`docs/superpowers/specs/2026-09-28-plan-execute-reflexion-design.md`](docs/superpowers/specs/2026-09-28-plan-execute-reflexion-design.md)。
 
 ## 快速启动
 

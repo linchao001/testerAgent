@@ -94,7 +94,7 @@ async def rollback_ctx(tmp_path):
     run_migrations(db_path)
     db = Database(db_path)
     await WorkspaceDAO(db).create(
-        WorkspaceRow.create(id=WS, name="w", kb_config={"kb_id": "KB", "mode": "sdk"})
+        WorkspaceRow.create(id=WS, name="w", kb_config={"kb_id": "KB", "options": {}})
     )
     await db.aexecute(
         "INSERT INTO conversation (id, workspace_id, title, created_at, updated_at) "

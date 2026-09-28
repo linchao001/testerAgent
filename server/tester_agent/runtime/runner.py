@@ -204,7 +204,9 @@ async def build_task_context(app: "AppContext", task_id: str) -> "TaskContext":
     task: TaskRow = await task_dao.get(task_id)
 
     ws = await WorkspaceDAO(db).get(task.workspace_id)
-    reader = await app.reme_factory.for_workspace(ws.kb_config_obj())
+    reader = await app.reme_factory.for_workspace(
+        task.workspace_id, ws.kb_config_obj()
+    )
 
     daos = DAOs(
         task=task_dao,

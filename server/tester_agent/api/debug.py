@@ -336,7 +336,9 @@ async def playground(
         )
     cfg = _apply_overrides(preset, body.overrides or {})
 
-    reader = await app_ctx.reme_factory.for_workspace(ws.kb_config_obj())
+    reader = await app_ctx.reme_factory.for_workspace(
+        workspace_id, ws.kb_config_obj()
+    )
     temp_task = TaskRow.create(
         id=f"playground-{uuid.uuid4().hex}",
         conversation_id="playground",
@@ -414,7 +416,7 @@ async def kb_tree(workspace_id: str, request: Request) -> dict:
     db = request.app.state.db
     ws = await WorkspaceDAO(db).get(workspace_id)  # 404
     reader = await request.app.state.reme_factory.for_workspace(
-        ws.kb_config_obj()
+        workspace_id, ws.kb_config_obj()
     )
     tree = await reader.list_index_tree()
     return tree.model_dump()

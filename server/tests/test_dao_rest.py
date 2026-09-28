@@ -156,12 +156,12 @@ async def _mk_case(
 
 class TestWorkspaceDAO:
     async def test_create_get_roundtrip_and_json_defaults(self, db):
-        await _mk_ws(db, "ws1", kb_config={"mode": "sdk", "kb_id": "kb-9"})
+        await _mk_ws(db, "ws1", kb_config={"kb_id": "kb-9", "options": {}})
         got = await WorkspaceDAO(db).get("ws1")
         assert got.id == "ws1"
         assert got.name == "name-ws1"
         assert got.description == ""
-        assert got.kb_config_obj() == {"mode": "sdk", "kb_id": "kb-9"}
+        assert got.kb_config_obj() == {"kb_id": "kb-9", "options": {}}
         assert got.deleted_at is None
         assert got.created_at == TS0
 
@@ -194,19 +194,22 @@ class TestWorkspaceDAO:
             await WorkspaceDAO(db).soft_delete("ghost")
 
     async def test_update_sentinel_does_not_clobber(self, db):
-        await _mk_ws(db, "ws1", description="原始描述", kb_config={"mode": "service"})
+        await _mk_ws(db, "ws1", description="原始描述", kb_config={"kb_id": "kb-old", "options": {}})
         dao = WorkspaceDAO(db)
         await dao.update("ws1", name="新名字")
         got = await dao.get("ws1")
         assert got.name == "新名字"
         assert got.description == "原始描述"  # 未传列保持
-        assert got.kb_config_obj() == {"mode": "service"}
+        assert got.kb_config_obj() == {"kb_id": "kb-old", "options": {}}
 
-        await dao.update("ws1", kb_config={"mode": "sdk"})
+        await dao.update("ws1", kb_config={"kb_id": "kb-new", "options": {"memory_search_enabled": True}})
         got = await dao.get("ws1")
         assert got.name == "新名字"
         assert got.description == "原始描述"
-        assert got.kb_config_obj() == {"mode": "sdk"}
+        assert got.kb_config_obj() == {
+            "kb_id": "kb-new",
+            "options": {"memory_search_enabled": True},
+        }
         # 无字段可改时短路，不报错
         await dao.update("ws1")
 

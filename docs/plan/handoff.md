@@ -19,6 +19,15 @@
 | 状态 | Task 1–11 已落地主干；**遗留五阶段拓扑已删除**——生产仅控制环；回退走 `start_run_from_plan`；confirm 统一 `gate_kind` 路径 |
 | 后续 | 将 capability 接到真实节点函数与 TaskContext；完善 ReviewProposal 前端卡片；同步 detailed-design 全量契约章节 |
 
+### 0.1 嵌入式 ReMe 记忆模块（2026-09-28）
+
+| 项 | 路径 |
+|---|---|
+| 设计 | `docs/superpowers/specs/2026-09-28-reme-memory-module-design.md` |
+| 实现计划 | `docs/superpowers/plans/2026-09-28-reme-memory-module.md` |
+| 状态 | M1–M4 done：同进程嵌入、删 HTTP、`memory_search` + 可选 `auto_memory`；KB 写仍仅 confirm |
+| 交接 | §3 记录区 [Reme-Memory] |
+
 ## 1. 状态约定
 
 - `todo` 未开始 ｜ `doing` 进行中 ｜ `done` 已完成且验收通过 ｜ `blocked` 被外部依赖阻塞 ｜ `needs-design` 发现设计缺口待裁决
@@ -90,6 +99,22 @@
 
 <!-- 记录区开始：新记录插入到本行下方 -->
 
+### [Reme-Memory] 嵌入式 ReMe 记忆模块 — done（2026-09-28）
+
+- 状态：done（取代 WP-09 HTTP 路径与 SP-1「优先 service」结论）
+- 交付物：
+  - `memory/`：`reme_config` / `ReMeMemoryManager` / `WorkspaceMemoryPool` / `prompts` / `tools`（仅 `memory_search`）
+  - `adapters/reme_sdk.py`：`SdkReMeReader` / `SdkReMeWriter` / `PoolRoutingWriter` / `register_sdk_builder`
+  - **删除** `adapters/reme_http.py`、`tests/test_reme_http.py`；`kb_config` 拒绝 `mode=service`
+  - Factory 缓存键 = `workspace_id`；vault = `data/workspaces/{id}/reme/`
+  - `main.py` lifespan：pool + sdk builder + `PoolRoutingWriter`；shutdown `pool.shutdown_all`
+  - chat：`run_chat_turn` 注入 pool → `memory_search` 工具 + guidance；`auto_memory_interval>0` 时异步 `auto_memory`
+  - 依赖：`reme-ai>=0.4.1.5,<0.5`；web `KbConfig` 无 service 字段
+- 验收：`pytest tests/test_memory_pool.py tests/test_memory_tools.py tests/test_reme_sdk.py tests/test_reme.py -q` 全绿；场景 12 import-linter 保持（graph/chat 不触达 Writer）
+- 与设计偏离：无；CI 仍 mock `reme_ctor`/`FakeReMeApp`，真实嵌入冒烟非必跑
+- 遗留：真实 `reme-ai` 本机冒烟；前端记忆浏览器 UI（一期非目标）
+- 下个包起步点：按主线继续；联调时工作区填 `kb_id` + 可选 `options.memory_search_enabled` / `auto_memory_interval`
+
 ### [PE-cleanup] 删除遗留五阶段拓扑 — done（2026-09-28）
 
 - 状态：done
@@ -145,7 +170,7 @@
 - 交付物：`api/domain.ts` KbConfig/KbTestOut/Agent/ModelConfig/ModelTestOut；`endpoints` workspace CRUD+kb/test、agents list/bind、model GET/PUT/test；`components/settings/CapsReadonly`；`pages/WorkspacesPage`（列表选中=当前会话区、表单、kb/test 能力位只读、智能体勾选绑定、删除 409）；`pages/SettingsPage`（保存后 model/test）；MSW `mocks/settingsHandlers.ts`；路由替换占位；Chat 无工作区引导链 `/workspaces`（不再静默建默认区）
 - 验收：前端 `npm test` **38 passed**（F0~F4 + F5：kb/test 能力位三勾选 disabled+passage_api 勾选 / 创建工作区写 session+绑定智能体 / DELETE 活跃任务 ErrorBanner TASK_STATE_CONFLICT / model save→test latency+model）；`npm run build` 成功
 - 与设计偏离：① **仍未引 TanStack Query**（与 F1~F4 一致）；② **智能体不可解绑**（后端无 unbind HTTP，已绑定 checkbox disabled）；③ **runtime_config 高级设置未做**（本包仅 model_config）；④ KB tree 仍未做（明确留给后续）
-- 遗留：真实联调需 ReMe service + 已保存 model；Chat 空工作区需先走工作区页；unbind API 若需要再补
+- 遗留：真实联调需嵌入式 ReMe（`kb_id`）+ 已保存 model；Chat 空工作区需先走工作区页；unbind API 若需要再补
 - 下个包起步点：**WP-X1 E2E + 场景 8/9**（或真实后端联调走通主场景）
 
 ### [WP-F4] RetrievalDebugPage — done（2026-09-28）
@@ -193,22 +218,26 @@
 - 遗留：真实后端联调需 `VITE_ENABLE_MSW=0` + 后端已起；视觉体系留给后续页面 WP
 - 下个包起步点：**WP-F1 ChatPage**（需求输入/建任务自动 run/澄清卡/change_request；联调 WP-26 已就绪）
 
-### [WP-09] ReMe 真实适配 — done（2026-09-28）
+### [WP-09] ReMe 真实适配 — done（2026-09-28）⚠️ **已被 [Reme-Memory] 取代**
 
-- 状态：done（依赖 SP-1 done）
+> **修订（2026-09-28）**：HTTP `reme_http` / `mode=service` / `WorkspaceRoutingWriter` 已删除；生产路径改为同进程嵌入 + `reme_sdk` + `PoolRoutingWriter`。下文为历史交付记录，勿按此复现。
+
+- 状态：done（依赖 SP-1 done）→ **superseded by [Reme-Memory]**
 - 交付物：新建 [adapters/reme_http.py](file:///D:/code/github/testerAgent/server/tester_agent/adapters/reme_http.py)——`HttpReMeReader`（`POST /knowledge_search|/read|/frontmatter_read|/list`）、`HttpReMeWriter`（`/save_to_knowledge` + `/read` 回查）、`WorkspaceRoutingWriter`（按工作区 `kb_config` 路由）、`register_service_builder` / `bucket_to_entry_type` / `build_http_reader`（构造期 list 探活）；caps 固定 SP-1 `(metadata_filter=False, entry_version=False, passage_api=True)`；`entry_id`=相对 path；IndexTree 由 `signals` 中 `chain:*` 派生；[main.py](file:///D:/code/github/testerAgent/server/tester_agent/main.py) lifespan 注册 `service` builder + `kb_writer=WorkspaceRoutingWriter(db)`；[api/kb.py](file:///D:/code/github/testerAgent/server/tester_agent/api/kb.py) confirm 向 payload 注入 `_workspace_id`；新增 tests/test_reme_http.py（15 用例）
 - 验收：`pytest tests/test_reme_http.py tests/test_reme.py tests/test_api_d.py tests/test_api_a.py` **133 passed**。覆盖 search 映射 / types·scope 不传远端 / 网络→KbUnreachable / get_entry frontmatter+chain / 缺失 404 / IndexTree 双 story / Factory probe caps / Writer 成功 verified + 拒绝 ok=False + 网络抛错；既有 Factory 未注册 sdk 行为与场景 12 import-linter 仍绿
 - 与设计偏离：① **优先 service 而非 SDK**（SP-1）；② **sdk mode 本包不注册**（仍 400 VALIDATION_BODY）；③ IndexTree 无原生 API，靠 `chain:*` 派生（Q12 仍 open，缺标记→空树+镜像降级）；④ confirm 注入 `_workspace_id` 不扩 Writer Protocol 形参
 - 遗留：未对真实 ReMe 进程做联通（需本机 `reme start config=business_kb` + kb/test）；`TestTaskAnswer`/`test_cleanup_ignores_fresh_tmp` 偶发失败与本包无关（时序/mtime）
 - 下个包起步点：γ 前端 WP-F0，或联调真实 ReMe 探活回填 Q12
 
-### [SP-1] ReMe 三能力探测 — done（2026-09-28）
+### [SP-1] ReMe 三能力探测 — done（2026-09-28）⚠️ **接入模式结论已修订**
+
+> **修订（2026-09-28）**：一期改为**默认同进程嵌入**；HTTP service 适配已删除。caps 三能力位结论仍有效。见 [Reme-Memory] 与 [reme-memory 设计](../superpowers/specs/2026-09-28-reme-memory-module-design.md)。
 
 - 探测源：`D:\code\github\ReMe` 分支 `feature/linchao`（只读源码；未起本地服务、未改生产代码）
-- 接入模式结论：**优先 `service`（HTTP）**，`sdk` 作可选二路
-  - HTTP：`HttpService` 将每个 job 挂为 `POST /{job.name}`（JSON）；客户端 `HttpClient` → `http://{host}:{port}/{action}`。业务 KB 配置见 `config/business_kb.yaml` / `personal_with_kb.yaml`（默认端口 **8182**，`knowledge_base_id` 默认 `zhb_kb`）
-  - SDK：同进程 `ReMe`/`Application` + `await app.run_job(name, **kwargs)`，与 HTTP 共用 job 面；但依赖 `reme-ai[core]`（agentscope/faiss/zvec 等）重，且占用索引/监听生命周期——不适合作 testerAgent 默认嵌入
-  - kb_config 约定（解锁 WP-09）：`mode=service` 时 `target=base_url`（如 `http://127.0.0.1:8182`），`kb_id` 对齐远端 `knowledge_base_id`；`options` 可留 timeout/bucket 默认等
+- 接入模式结论（**历史**）：~~优先 `service`（HTTP），`sdk` 作可选二路~~ → **现行：仅嵌入式 SDK**
+  - ~~HTTP：`HttpService`…~~（已删除）
+  - SDK：同进程 `ReMe`/`Application` + `await app.run_job(name, **kwargs)`——**现行默认路径**；依赖 `reme-ai`，vault 按工作区隔离
+  - kb_config 约定（现行）：`{kb_id, knowledge_dir?, create_knowledge_base?, options}`；拒绝 `mode=service`
 - 三能力位结论（相对 dd §8.4）：
 
   | 能力 | 结论 | 依据 | WP-09 预案 |

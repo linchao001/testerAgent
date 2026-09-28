@@ -1,22 +1,14 @@
 """FastAPI 组合根。
 
-接线状态：WP-01 骨架 → WP-21 EventBus + SSE → WP-22 GraphRegistry/
-TaskRegistry/Runner → WP-23 Reaper + lifespan 启停序列 + 优雅关闭 →
-WP-25 API-A 路由（workspaces/agents/conversations/config）+ reme_factory
-入 app.state（kb/test 探活与 Runner build_ctx 共用同一工厂实例）→
-WP-26 API-B tasks 路由（create/get/run/cancel/confirm/answer/rollback）
-+ file_store/app_ctx 入 app.state（创建任务写 requirement.md 与回退/
-regenerate 入口共用）→ WP-27 API-C cases 路由（list/get/edit/review/
-regenerate/export，ExportService 经 app_ctx 懒构造）→ WP-28 API-D debug/kb 路由（traces/snapshots/playground/kb tree + kb 提案两阶段；
-kb_writer 入 app.state：WP-09 起为 WorkspaceRoutingWriter（按工作区
-kb_config 路由 HTTP 写入；图路径仍不可达）→ WP-29 Reconciler（DB↔文件
-三态对账，启动全量+手动端点）+ IdempotencyStore（内存 TTL，review/
-regenerate/run 幂等去重）+ Maintenance 联动 .tmp/exports 清理。
-
-后续 WP 在此接线：静态托管 web/dist（WP-F0）。
+接线状态：EventBus/SSE、GraphRegistry/TaskRegistry/Runner、Reaper、
+API A–D、ExportService、Reconciler、IdempotencyStore、Maintenance；
+**嵌入式 ReMe**：``WorkspaceMemoryPool`` + ``register_sdk_builder`` +
+``PoolRoutingWriter``（``app.state.kb_writer``；图路径仍不可达 Writer）。
+静态托管 ``web/dist``。
 
 lifespan 严格按 dd §6.5 六步启动序列，任一步失败阻断启动；关闭先走
-Reaper.graceful_shutdown（取消在飞任务等 30s）再释放图连接与 DB。
+Reaper.graceful_shutdown（取消在飞任务等 30s）再 ``memory_pool.shutdown_all``
+与 DB 释放。
 """
 
 from __future__ import annotations
@@ -30,7 +22,7 @@ from fastapi import FastAPI
 from . import __version__
 from .adapters.llm import OpenAICompatLLMClient
 from .adapters.reme import ReMeReaderFactory
-from .adapters.reme_http import WorkspaceRoutingWriter, register_service_builder
+from .adapters.reme_sdk import PoolRoutingWriter, register_sdk_builder
 from .api.agents import router as agents_router
 from .api.cases import router as cases_router
 from .api.config import router as config_router
@@ -46,6 +38,7 @@ from .errors import LLMBadRequest
 from .graph.constants import HEARTBEAT_INTERVAL_SEC, HEARTBEAT_STALE_SEC
 from .graph.registry import GraphRegistry
 from .logging_config import get_logger, setup_logging
+from .memory.pool import WorkspaceMemoryPool
 from .runtime.bus import EventBus
 from .runtime.context import AppContext
 from .runtime.idempotency import IdempotencyStore
@@ -95,11 +88,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime_cfg = cfg_row.runtime_dict()
         stale_sec = int(runtime_cfg.get("heartbeat_stale_sec", HEARTBEAT_STALE_SEC))
         reme_factory = ReMeReaderFactory()
-        register_service_builder(reme_factory)  # WP-09：mode=service → HTTP
+        memory_pool = WorkspaceMemoryPool(settings.data_dir)
+        register_sdk_builder(reme_factory, memory_pool)
         _app.state.reme_factory = reme_factory
-        # WP-09：写实现仅 L2 提案确认端点可达（dd §9.2 / PRD 7）；按工作区
-        # kb_config.target 路由，非 service 模式仍 502。
-        _app.state.kb_writer = WorkspaceRoutingWriter(db)
+        _app.state.memory_pool = memory_pool
+        # 写实现仅 L2 提案确认端点可达（dd §9.2 / PRD 7）
+        _app.state.kb_writer = PoolRoutingWriter(db, memory_pool)
         # WP-29：进程内幂等键存储（dd §6.6 一期内存 TTL）
         idem_store = IdempotencyStore()
         _app.state.idem_store = idem_store
@@ -161,6 +155,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             # ---- §6.5 关闭序列：取消在飞任务等 30s → 图连接 → DB ----
             await reaper.graceful_shutdown(task_registry, timeout_sec=30.0)
+            await memory_pool.shutdown_all()
             await graphs.aclose()
             db.close()
             logger.info("shutdown")

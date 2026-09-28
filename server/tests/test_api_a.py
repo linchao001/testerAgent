@@ -36,7 +36,13 @@ from tests.fakes import FakeLLM, FakeReMeReader
 WS = "ws-1"
 CONV = "conv-1"
 TASK = "task-1"
-KB_CONFIG = {"mode": "sdk", "target": "/tmp/reme", "kb_id": "kb-1", "options": {}}
+KB_CONFIG = {
+    "kb_id": "kb-1",
+    "knowledge_bases_dir": "",
+    "knowledge_dir": "knowledge",
+    "create_knowledge_base": False,
+    "options": {},
+}
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -122,7 +128,7 @@ class TestWorkspacesCrud:
         assert bad_name.json()["error"]["code"] == "VALIDATION_BODY"
         bad_mode = client.post(
             "/api/v1/workspaces",
-            json={"name": "x", "kb_config": {**KB_CONFIG, "mode": "http"}},
+            json={"name": "x", "kb_config": {**KB_CONFIG, "mode": "service"}},
         )
         assert bad_mode.status_code == 400
 
@@ -238,9 +244,10 @@ class TestKbTest:
         assert err["code"] == "KB_UNREACHABLE"
         assert err["retryable"] is True
 
-    def test_probe_unregistered_mode_400(self, env):
+    def test_probe_unregistered_sdk_builder_400(self, env):
         client, db, _ = env
-        _seed_workspace(db)  # 默认工厂未注册任何 builder（真实适配 WP-09）
+        _seed_workspace(db)
+        client.app.state.reme_factory._builders.clear()
         resp = client.post(f"/api/v1/workspaces/{WS}/kb/test")
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "VALIDATION_BODY"

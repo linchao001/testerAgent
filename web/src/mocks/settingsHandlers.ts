@@ -54,9 +54,8 @@ export function resetSettingsMockState() {
       name: '演示工作区',
       description: 'WP-F5 mock',
       kb_config: {
-        mode: 'service',
-        target: 'http://127.0.0.1:8182',
         kb_id: 'zhb_kb',
+        options: {},
       },
       created_at: now(),
     },

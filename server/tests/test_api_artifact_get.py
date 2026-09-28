@@ -25,7 +25,13 @@ from tester_agent.store.models import (
 )
 
 WS, CONV, TASK, ART = "ws-1", "conv-1", "task-1", "art-link-1"
-KB_CONFIG = {"mode": "sdk", "target": "/tmp/reme", "kb_id": "kb-1", "options": {}}
+KB_CONFIG = {
+    "kb_id": "kb-1",
+    "knowledge_bases_dir": "",
+    "knowledge_dir": "knowledge",
+    "create_knowledge_base": False,
+    "options": {},
+}
 
 LINK_PAYLOAD = {
     "links": [

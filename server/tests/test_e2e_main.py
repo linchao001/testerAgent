@@ -64,7 +64,7 @@ from tester_agent.store.models import (
 from tester_agent.store.workspace_files import FileStore
 
 WS, CONV, TASK = "ws-x1", "conv-x1", "task-x1"
-KB = {"mode": "sdk", "target": "/tmp/reme", "kb_id": "kb-1", "options": {}}
+KB = {"kb_id": "kb-1", "options": {}}
 C1 = "h2-1"
 
 LINK_PLAN = {
