@@ -414,6 +414,15 @@ class TaskDAO:
 
     _ACTIVE_STATUSES = ("running", "waiting_confirm", "waiting_input", "cancelling")
 
+    async def list_all_by_workspace(self, workspace_id: str) -> list[TaskRow]:
+        """对账全量（WP-29）：工作区下全部任务行（含终态），不分页。"""
+        rows = await self._db.aquery(
+            "SELECT " + self._COLUMNS + " FROM task WHERE workspace_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (workspace_id,),
+        )
+        return [TaskRow.from_row(r) for r in rows]
+
     async def count_active_by_workspace(self, workspace_id: str) -> int:
         """工作区活跃任务数（WP-25 增量方法，非 dd §3.3 冻结签名）。
 
@@ -1009,6 +1018,19 @@ class TestcaseDAO:
         if res.rowcount == 0:
             raise NotFoundError(f"测试用例不存在：{case_id}")
 
+    async def list_all_for_task(self, task_id: str) -> list[CaseRow]:
+        """对账全量（WP-29，dd §11.3 list_all_including_obsolete）：
+
+        返回该任务全部用例行（含 obsolete），不分页、不按 status 过滤；
+        对账需遍历所有 DB 行与盘上文件做集合差。只加不改（非 §3.3 冻结签名）。
+        """
+        rows = await self._db.aquery(
+            "SELECT " + self._COLUMNS + " FROM testcase WHERE task_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (task_id,),
+        )
+        return [CaseRow.from_row(r) for r in rows]
+
 
 # ======================================================================
 # WP-04：其余行类型与 DAO（dd §3.1 §3.3；签名 §3.3 已冻结者严格照签）
@@ -1087,6 +1109,14 @@ class WorkspaceDAO:
             cursor=cursor,
             row_cls=WorkspaceRow,
         )
+
+    async def list_all(self) -> list[WorkspaceRow]:
+        """对账/维护全量（WP-29）：返回全部未软删工作区，不分页。"""
+        rows = await self._db.aquery(
+            "SELECT " + self._COLUMNS + " FROM workspace "
+            "WHERE deleted_at IS NULL ORDER BY created_at ASC, id ASC"
+        )
+        return [WorkspaceRow.from_row(r) for r in rows]
 
     async def update(
         self,
@@ -2045,6 +2075,20 @@ class ProposalDAO:
         if res.rowcount == 0:
             raise NotFoundError(f"知识库提案不存在：{proposal_id}")
         return (await self.get(proposal_id)).fail_count
+
+    async def bind_idempotency_key(self, proposal_id: str, key: str) -> bool:
+        """原子绑定确认幂等键（WP-28，dd §11.4 确认事务内调用）。
+
+        仅当行当前未绑定（IS NULL）时生效，返回是否绑定成功；已绑定返回
+        False，由调用方比对既有键决定重放/409。键有 UNIQUE 索引，跨提案
+        撞键抛 sqlite3.IntegrityError，由 API 层翻译为 409。
+        """
+        res = await self._db.aexecute(
+            "UPDATE kb_proposal SET idempotency_key = ? "
+            "WHERE id = ? AND idempotency_key IS NULL",
+            (key, proposal_id),
+        )
+        return res.rowcount == 1
 
     async def mark_confirmed(
         self, proposal_id: str, write_result: dict

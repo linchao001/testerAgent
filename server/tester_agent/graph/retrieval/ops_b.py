@@ -74,6 +74,9 @@ class RetrievalOutcome(BaseModel):
     truncated: bool
     trace_id: str = ""
     snapshot_id: str | None = None
+    # WP-28 playground（dd §8.7，persist=False）：最终候选全集（含 kept/
+    # drop_reason）随响应回显；节点路径（persist=True）恒为空，避免冗余驻留。
+    candidates: list = []
 
 
 # ---------- token 估算（dd §8.2：中英混合） ----------

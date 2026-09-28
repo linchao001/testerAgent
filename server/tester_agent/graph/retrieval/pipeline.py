@@ -81,8 +81,15 @@ async def retrieve_pipeline(
     batch_id: str | None = None,
     scope: dict | None = None,
     stage_version: int = 1,
+    persist: bool = True,
 ) -> RetrievalOutcome:
-    """产出注入块 + 留痕（trace/snapshot）。一行 = 一个批次一次管线调用。"""
+    """产出注入块 + 留痕（trace/snapshot）。一行 = 一个批次一次管线调用。
+
+    ``persist=False``（WP-28 playground，dd §8.7）：不落任何业务表——
+    跳过 trace 落库（playground 的临时 task_id 不在 task 表，落库会触发
+    外键违例），snapshot 由调用方强制 off 天然不写；最终 candidates 挂在
+    ``outcome.candidates`` 上随 HTTP 响应直接返回，trace_id 保持空串。
+    """
     level = _validate_level(ctx.snapshot_level)
     task = ctx.task
     sink = RetrievalTraceBuilder()
@@ -160,6 +167,10 @@ async def retrieve_pipeline(
     outcome = await assemble(cands, items, cfg, sink=sink)
 
     # ⑨ trace 第一次写：append 拿 id（dd §8.3；candidates 为最终带 kept/drop_reason 全集）
+    #    persist=False（playground）时不落库，candidates 挂 outcome 随响应返回（dd §8.7）。
+    if not persist:
+        outcome.candidates = list(cands)
+        return outcome
     trace_id = uuid.uuid4().hex
     trace_row = TraceRow.create(
         id=trace_id,

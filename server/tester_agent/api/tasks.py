@@ -39,7 +39,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -81,6 +81,7 @@ from ..store.models import (
     TestcaseDAO,
 )
 from ..store.workspace_files import FileStore
+from .common import idem_check, idem_record
 
 logger = get_logger(__name__)
 
@@ -303,17 +304,26 @@ async def get_task(task_id: str, request: Request) -> TaskOut:
 
 
 @router.post("/tasks/{task_id}/run")
-async def run_task(task_id: str, request: Request) -> RunOut:
+async def run_task(
+    task_id: str, request: Request,
+    idempotency_key: str | None = Header(None),
+) -> RunOut:
+    # WP-29 幂等键去重（tech-design §5.0：tasks/run 必带 Idempotency-Key）
+    cached = idem_check(request, "tasks.run", idempotency_key, "")
+    if cached is not None:
+        return RunOut(**cached.body)
     runner = _runner(request)
     handle = await runner.start(task_id, event="run")  # 404/409 在此裁决
     task = await TaskDAO(_db(request)).get(task_id)
     artifacts = await ArtifactDAO(_db(request)).list_active_chain(task_id)
-    return RunOut(
+    out = RunOut(
         task_id=handle.task_id,
         graph_run_id=handle.graph_run_id,
         events_url=handle.events_url,
         resume_from=_resume_from(task, artifacts),
     )
+    idem_record(request, "tasks.run", idempotency_key, "", 200, out.model_dump())
+    return out
 
 
 @router.post("/tasks/{task_id}/cancel")

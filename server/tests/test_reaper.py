@@ -242,6 +242,7 @@ class TestLazyPurge:
     async def test_default_retention_shape(self):
         assert DEFAULT_RETENTION == {
             "events_days": 7, "snapshots_days": 30, "proposals_days": 14,
+            "obsolete_cases_days": 30, "exports_days": 30,
         }
 
     async def test_retention_zero_purges_all_old_events(self, db):

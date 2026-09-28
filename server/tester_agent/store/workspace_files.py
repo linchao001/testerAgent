@@ -469,6 +469,40 @@ class FileStore:
             self._read_text_sync, ws, task, rel_path
         )
 
+    async def edit_case(
+        self,
+        ws: str,
+        task: str,
+        rel_path: str,
+        content: CaseFileContent,
+        *,
+        expected_hash: str,
+    ) -> WrittenCase:
+        """编辑用例（WP-27 dd §10.3④）：服务端重算元数据重渲染 → 两遍 hash →
+        带 expected_hash 乐观锁覆盖（If-Match）。
+
+        与 write_case 的差异：不重算落盘路径（沿用 row.file_path，标题改名
+        不迁移文件——slug 仅可读性，唯一性由 case_id 前缀保证，dd §4.1）。
+        """
+        return await asyncio.to_thread(
+            self._edit_case_sync, ws, task, rel_path, content, expected_hash
+        )
+
+    def _edit_case_sync(
+        self,
+        ws: str,
+        task: str,
+        rel_path: str,
+        content: CaseFileContent,
+        expected_hash: str,
+    ) -> WrittenCase:
+        placeholder = render_case_markdown(content, content_hash=_PLACEHOLDER_HASH)
+        new_hash = hash_case_text(placeholder)
+        final_md = render_case_markdown(content, content_hash=new_hash)
+        return self._overwrite_case_sync(
+            ws, task, rel_path, final_md, expected_hash
+        )
+
     async def overwrite_case(
         self,
         ws: str,
@@ -584,6 +618,16 @@ class FileStore:
 
     # ---- 维护 ----
 
+    async def export_zip_path(self, ws: str, task: str, job_id: str) -> Path:
+        """导出 zip 的目标绝对路径（WP-27）：exports/{job_id}/export.zip。
+
+        仅拼路径不建目录；调用方（ExportService）在后台线程写盘。安全段校验
+        沿用 task 目录口径（exports/ 在任务目录下，dd §4.1 路径唯一来源）。
+        """
+        target = self._task_dir(ws, task) / "exports" / job_id / "export.zip"
+        self._safe_segment(job_id, "job_id")
+        return target
+
     async def list_case_files(self, ws: str, task: str) -> list[PathInfo]:
         return await asyncio.to_thread(self._list_case_files_sync, ws, task)
 
@@ -634,6 +678,52 @@ class FileStore:
                 continue
             removed += 1
             freed += size
+        return CleanupReport(removed, freed)
+
+    async def cleanup_exports(self, retention_days: int) -> CleanupReport:
+        """清理任务 exports/ 目录下超保留期的导出 zip（WP-29）。
+
+        导出 zip 落在 ``exports/{job_id}/export.zip``；按 mtime 早于 cutoff
+        整目录删除（含空 job 目录）。不碰 cases/snapshots。
+        """
+        return await asyncio.to_thread(self._cleanup_exports_sync, retention_days)
+
+    def _cleanup_exports_sync(self, retention_days: int) -> CleanupReport:
+        cutoff = time.time() - int(retention_days) * 86400
+        workspaces = self._root / "workspaces"
+        removed = 0
+        freed = 0
+        if not workspaces.is_dir():
+            return CleanupReport(0, 0)
+        for task_dir in workspaces.rglob("*/tasks/*"):
+            exports = task_dir / "exports"
+            if not exports.is_dir():
+                continue
+            for job_dir in exports.iterdir():
+                if not job_dir.is_dir():
+                    continue
+                try:
+                    stat = job_dir.stat()
+                except OSError:
+                    continue
+                if stat.st_mtime >= cutoff:
+                    continue
+                # 统计目录内文件大小后删除
+                try:
+                    files = [p for p in job_dir.rglob("*") if p.is_file()]
+                except OSError:
+                    files = []
+                for f in files:
+                    try:
+                        freed += f.stat().st_size
+                        f.unlink()
+                        removed += 1
+                    except OSError:
+                        continue
+                try:
+                    job_dir.rmdir()
+                except OSError:
+                    pass
         return CleanupReport(removed, freed)
 
     # ---- 内部工具 ----

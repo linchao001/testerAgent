@@ -3,7 +3,9 @@
 - 游标合法性在 API 边界前置校验（dd §3.3："非法游标由 API 层翻译为 400"），
   DAO 侧 decode_cursor 抛 ValueError，这里转成 ValidationError(VALIDATION_BODY)；
 - Page 信封（dd §10.1）：{"items": [...], "next_cursor": str|null}，
-  行对象经 mapper 转响应模型后交由 FastAPI 序列化。
+  行对象经 mapper 转响应模型后交由 FastAPI 序列化；
+- WP-29 增量：幂等键助手 ``idem_check``/``idem_record``（dd §6.6 一期内存
+  TTL），供 review/regenerate/run 等 mutate 端点接入。
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import Query
+from fastapi import Query, Request
 
 from ..errors import ValidationError
 from ..store.models import Page, decode_cursor
@@ -44,3 +46,44 @@ def pagination_params(
 ) -> tuple[int, str | None]:
     """统一 ?limit=&cursor= 解析（tech-design §5.0），返回 (limit, cursor)。"""
     return limit, checked_cursor(cursor)
+
+
+# ---------- WP-29 幂等键助手（dd §6.6） ----------
+
+
+def idem_check(
+    request: Request, endpoint: str, idem_key: str | None, body_json: str
+):
+    """幂等键查键：无 Idempotency-Key 头返回 None（不幂等）；命中同 hash 返回
+    IdemRecord（调用方用 rec.body 重建响应模型）；hash 不一致抛 409
+    （VersionConflict 由错误信封处理）。"""
+    if not idem_key:
+        return None
+    store = getattr(request.app.state, "idem_store", None)
+    if store is None:
+        return None
+    from ..runtime.idempotency import IdempotencyStore
+
+    store: IdempotencyStore
+    return store.lookup(endpoint, idem_key, store.request_hash(body_json))
+
+
+def idem_record(
+    request: Request,
+    endpoint: str,
+    idem_key: str | None,
+    body_json: str,
+    status_code: int,
+    body: dict,
+) -> None:
+    """落幂等键（仅当携带 Idempotency-Key 头且 store 就绪时）。"""
+    if not idem_key:
+        return
+    store = getattr(request.app.state, "idem_store", None)
+    if store is None:
+        return
+    from ..runtime.idempotency import IdempotencyStore
+
+    store: IdempotencyStore
+    store.record(endpoint, idem_key, store.request_hash(body_json),
+                 status_code, body)

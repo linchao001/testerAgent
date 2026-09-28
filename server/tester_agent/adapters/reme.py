@@ -38,7 +38,7 @@ from typing import (
 from pydantic import BaseModel
 
 from ..domain import DegradedStep, EntryType
-from ..errors import ValidationError
+from ..errors import KbUnreachable, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -492,3 +492,40 @@ def _validate_kb_config(kb_config: dict) -> tuple[str, str, str]:
         )
     assert isinstance(mode, str) and isinstance(target, str) and isinstance(kb_id, str)
     return mode, target, kb_id
+
+
+# ---------- §9.2 ReMeWriter（只被 api/kb.py import；L3 图/运行时禁入） ----------
+
+
+class WriteResult(BaseModel):
+    """ReMe 写入回执（dd §9.2）。"""
+
+    ok: bool
+    remote_ref: str | None = None  # 写入后的条目 ID/版本
+    verified: bool = False  # 是否经过写入后回查（S6）
+    error_code: str | None = None
+
+
+class ReMeWriter(Protocol):
+    """知识库写入协议（dd §9.2）。
+
+    结构红线（PRD 7 / tech-design §2）：仅 L2 确认端点（api/kb.py）持有本
+    协议实例，AppContext/TaskContext 不设写字段，图运行代码路径 import 本
+    协议即违反 import-linter 门禁（dd §15.2 场景 12，WP-28 测试覆盖）。
+    """
+
+    async def write_proposal(self, token: str, proposal: dict) -> WriteResult: ...
+
+
+class UnavailableWriter:
+    """默认写实现：WP-09 真实适配未注册前，写入一律不可达（502）。
+
+    与 dd §9.2 的偏离（交接单登记）：§9.2 形参为 ``OneTimeToken``/``KbPayload``
+    具名类型，v1 落为 ``str``/``dict``（令牌明文串与提案 payload），语义不变。
+    """
+
+    async def write_proposal(self, token: str, proposal: dict) -> WriteResult:
+        raise KbUnreachable(
+            "ReMe 写入适配未注册（真实适配在后续版本接入）",
+            details={"reason": "writer_not_registered"},
+        )
