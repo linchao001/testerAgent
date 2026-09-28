@@ -16,6 +16,7 @@ import type {
   PlaygroundOut,
   ReviewAction,
   ReviewOut,
+  ReviewProposal,
   RollbackOut,
   RunHandle,
   SendMessageOut,
@@ -189,7 +190,7 @@ export function getArtifact(artifactId: string): Promise<ArtifactDetail> {
 export function confirmTask(
   taskId: string,
   body: {
-    gate_kind: 'plan_confirm' | 'review_decision'
+    gate_kind?: 'plan_confirm' | 'review_decision'
     artifact_id: string
     action: 'confirm' | 'modify' | 'reject_rerun'
     expected_version?: number | null
@@ -199,7 +200,22 @@ export function confirmTask(
 ): Promise<ConfirmOut> {
   return apiRequest<ConfirmOut>(
     `/api/v1/tasks/${encodeURIComponent(taskId)}/confirm`,
-    { method: 'POST', body },
+    {
+      method: 'POST',
+      body: {
+        gate_kind: 'plan_confirm',
+        ...body,
+      },
+    },
+  )
+}
+
+export function getReviewProposal(
+  taskId: string,
+  artifactId: string,
+): Promise<ReviewProposal> {
+  return apiRequest<ReviewProposal>(
+    `/api/v1/tasks/${encodeURIComponent(taskId)}/review-proposals/${encodeURIComponent(artifactId)}`,
   )
 }
 

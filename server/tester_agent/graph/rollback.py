@@ -8,8 +8,8 @@
    落账——目标阶段旧版本 superseded + 用户修订版 v+1（user_revised）落库、
    下游产物按影响面 supersede 或 inherit（graph_run_id 改挂新 run）、
    受影响 point 的用例置 obsolete、task 切新 run/派生 thread；
-3. 事务提交后 ``GraphRegistry.start_run_from_stage`` 启动新 thread
-   从目标阶段重跑（入口 state 注入修订产物， unaffected 节点零 LLM 继承）。
+3. 事务提交后 ``GraphRegistry.start_run_from_plan`` 启动新 thread
+   （入口 = 修订后 AgentPlan + 继承 artifacts）。
 
 影响面判定规则（dd §11.2）：
 - link_identify 回退：story 删除/link 变更 → 其下 points 全部 affected；
@@ -25,9 +25,12 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from ..domain import (
+    AgentPlan,
     IdChange,
     ImpactAnalysis,
     LinkPlan,
+    PlanStep,
+    PlanStepKind,
     PointPlan,
     StageImpact,
 )
@@ -38,6 +41,7 @@ from ..graph.constants import (
     STAGE_POINT_WRITE,
 )
 from ..store.models import ArtifactRow, MessageRow, TaskDAO
+from ..tools.capabilities import STAGE_TO_KIND
 
 if TYPE_CHECKING:
     from ..runtime.context import TaskContext
@@ -47,6 +51,13 @@ _LINK_STORY_UNAFFECTED_FIELDS = {"summary"}
 #: point_write 回退时，point 仅这些字段变化视为 unaffected
 _POINT_UNAFFECTED_FIELDS = {"priority", "title"}
 
+# 回退目标阶段 → 控制环对应步 kind（其后步骤一律 pending 重跑）
+_STAGE_KIND_ORDER: list[tuple[str, PlanStepKind]] = [
+    ("intake", PlanStepKind.INTAKE_PARSE),
+    (STAGE_LINK_IDENTIFY, PlanStepKind.COVERAGE_DESIGN),
+    (STAGE_POINT_WRITE, PlanStepKind.POINT_DESIGN),
+    (STAGE_CASE_GENERATE, PlanStepKind.CASE_GENERATE),
+]
 
 # ---------- 结构化 diff（dd §11.2 影响面判定规则） ----------
 
@@ -381,13 +392,13 @@ async def rollback(ctx: "TaskContext", task_id: str, body: RollbackIn) -> Impact
             )
         )
 
-    # ⑩ 事务提交后：构建入口 state 并启动新 thread 从目标阶段起跑
+    # ⑩ 事务提交后：构建入口 state（AgentPlan + 继承产物）并初始化新 thread
     entry_state = await _build_entry_state(
         ctx, task, new_run, target.stage, entry_plan
     )
     if ctx.app.graphs is not None:
-        await ctx.app.graphs.start_run_from_stage(
-            new_thread, stage=target.stage, entry_state=entry_state
+        await ctx.app.graphs.start_run_from_plan(
+            new_thread, entry_state=entry_state
         )
     if ctx.emit is not None:
         await ctx.emit(
@@ -398,6 +409,72 @@ async def rollback(ctx: "TaskContext", task_id: str, body: RollbackIn) -> Impact
     return impact
 
 
+def _build_rollback_plan(target_stage: str, *, artifacts: dict[str, Any]) -> AgentPlan:
+    """构造回退入口 AgentPlan：目标阶段之前 done，目标及之后 pending。"""
+    target_kind = STAGE_TO_KIND.get(target_stage, PlanStepKind.COVERAGE_DESIGN)
+    reached_target = False
+    steps: list[PlanStep] = []
+    for i, (stage, kind) in enumerate(_STAGE_KIND_ORDER):
+        sid = f"s{i + 1}"
+        if not reached_target and kind == target_kind:
+            reached_target = True
+        if reached_target:
+            steps.append(
+                PlanStep(
+                    step_id=sid,
+                    kind=kind,
+                    goal=f"rollback:{stage}",
+                    status="pending",
+                    requires_confirm=kind
+                    in (PlanStepKind.COVERAGE_DESIGN, PlanStepKind.POINT_DESIGN),
+                )
+            )
+        else:
+            # 上游步：挂已有 artifact 为 done
+            art_id = None
+            for aid, art in artifacts.items():
+                if art.get("kind") in (kind.value, stage) or (
+                    kind == PlanStepKind.INTAKE_PARSE and art.get("kind") == "clauses"
+                ):
+                    art_id = aid
+                    break
+            steps.append(
+                PlanStep(
+                    step_id=sid,
+                    kind=kind,
+                    goal=f"inherited:{stage}",
+                    status="done",
+                    output_ref=art_id,
+                    requires_confirm=False,
+                )
+            )
+    # 评审步：回退后一律 pending（需重新评审）
+    for j, kind in enumerate(
+        (
+            PlanStepKind.REVIEW_COVERAGE,
+            PlanStepKind.REVIEW_QUALITY,
+            PlanStepKind.REVIEW_ADOPTION,
+        ),
+        start=len(steps) + 1,
+    ):
+        steps.append(
+            PlanStep(
+                step_id=f"s{j}",
+                kind=kind,
+                goal=kind.value,
+                status="pending",
+                requires_confirm=True,
+            )
+        )
+    return AgentPlan(
+        plan_id=f"plan-rb-{uuid.uuid4().hex[:10]}",
+        version=1,
+        goal="rollback resume",
+        steps=steps,
+        status="active",
+    )
+
+
 async def _build_entry_state(
     ctx: "TaskContext",
     task,
@@ -405,18 +482,23 @@ async def _build_entry_state(
     target_stage: str,
     entry_plan: dict,
 ) -> dict:
-    """构建回退新 thread 的入口 state（dd §11.2）。
+    """构建回退新 thread 的入口 state（控制环 + 遗留字段镜像）。
 
-    包含 base 字段 + 全部上游阶段的 active 产物。目标阶段的修订产物已在
-    DB 落账（graph_run_id=new_run），节点经 get_active 回放，无需注入 state。
+    包含 AgentPlan（目标步起 pending）、artifacts、clauses，以及目标阶段
+    之前各阶段的 active 产物（供下游能力节点消费）。目标阶段修订产物已在
+    DB 落账，节点经 get_active 回放。
     """
     artifact_dao = ctx.daos.artifact if ctx.daos else None
     state: dict[str, Any] = {
         "task_id": task.id,
         "graph_run_id": new_run,
         "workspace_id": task.workspace_id,
+        "human_gates": {"link": True, "point": True, "review": True},
+        "artifacts": {},
+        "plan_cursor": None,
+        "reflection_log": [],
+        "reflect_counts": {},
     }
-    # clauses 从 task 行取（intake 已落库）
     try:
         clauses = task.clauses_obj()
         if clauses:
@@ -424,8 +506,8 @@ async def _build_entry_state(
     except Exception:
         pass
 
+    artifacts: dict[str, Any] = {}
     if artifact_dao is not None:
-        # 注入目标阶段之前各阶段的 active 产物（供下游节点消费）
         stage_order = [
             STAGE_LINK_IDENTIFY,
             STAGE_POINT_WRITE,
@@ -438,10 +520,32 @@ async def _build_entry_state(
         }
         for stage in stage_order:
             if stage == target_stage:
-                # 目标阶段的修订产物在 DB，节点回放；不注入 state（避免覆盖）
                 break
             art = await artifact_dao.get_active(task.id, stage)
             if art is not None:
                 state[state_key[stage]] = art.payload_dict()
+                artifacts[art.id] = {
+                    "kind": art.kind or stage,
+                    "version": art.stage_version,
+                    "payload_ref": art.id,
+                    "confirmed_by": art.confirmed_by or "user",
+                    "payload": art.payload_dict(),
+                }
 
+        # clauses 作 intake 产物镜像
+        if state.get("clauses"):
+            cid = f"art-clauses-{task.id[:8]}"
+            artifacts[cid] = {
+                "kind": "clauses",
+                "version": 1,
+                "payload_ref": cid,
+                "confirmed_by": "user",
+                "payload": state["clauses"],
+            }
+
+    plan = _build_rollback_plan(target_stage, artifacts=artifacts)
+    state["agent_plan"] = plan.model_dump()
+    state["artifacts"] = artifacts
+    # 入口不注入目标阶段 plan 字段（避免覆盖 DB 回放）；修订已落库
+    del entry_plan  # 保留签名兼容；产物以 DB active 为准
     return state

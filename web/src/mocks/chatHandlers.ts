@@ -281,6 +281,49 @@ export const chatHandlers = [
       },
     })
   }),
+
+  http.get('/api/v1/tasks/:id/review-proposals/:artifactId', () => {
+    return HttpResponse.json({
+      scope: 'adoption',
+      items: [
+        {
+          target_id: 'case-1',
+          action: 'adopt',
+          rationale: '覆盖主路径',
+          confidence: 0.9,
+          patch: null,
+        },
+      ],
+      matrix_ref: null,
+      degraded: false,
+    })
+  }),
+
+  http.post('/api/v1/tasks/:id/confirm', async ({ request, params }) => {
+    if (!task || task.id !== params.id) {
+      return HttpResponse.json(
+        {
+          error: {
+            code: 'NOT_FOUND',
+            message: 'task missing',
+            retryable: false,
+          },
+        },
+        { status: 404 },
+      )
+    }
+    const body = (await request.json()) as {
+      artifact_id: string
+      expected_version?: number
+    }
+    task = { ...task, status: 'running', updated_at: now() }
+    return HttpResponse.json({
+      task_id: task.id,
+      status: 'running',
+      artifact_id: body.artifact_id,
+      stage_version: body.expected_version ?? 1,
+    })
+  }),
 ]
 
 /** 模拟到达 CP1：更新 mock task 的 active artifact（供 change_request 回退）。 */

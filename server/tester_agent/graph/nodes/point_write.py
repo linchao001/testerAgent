@@ -400,11 +400,17 @@ async def point_write_node(ctx: "TaskContext", state: dict) -> dict[str, Any]:
             + "\n\n"
             + loader.load(_MAIN_PROMPT).content.strip()
         )
+        from ..tool_gather import append_tool_notes, gather_notes_for_ctx
+
         user_content = render_user_message(
             render_stories_block(subset, story_index),
             render_clauses_block(clause_texts),
             render_knowledge_block(outcome.items, ctx_.mirror),
         )
+        notes = await gather_notes_for_ctx(
+            ctx_, "point_write", "查看工作区文件，辅助撰写测试点"
+        )
+        user_content = append_tool_notes(user_content, notes)
         messages: list[dict] = [
             {"role": "system", "content": system},
             {"role": "user", "content": user_content},

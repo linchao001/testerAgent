@@ -21,13 +21,15 @@ from pathlib import Path
 import aiosqlite
 import pytest
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tester_agent.errors import AppError, NotFoundError
-from tester_agent.graph.main_graph import build_graph
 from tester_agent.graph.nodes import intake_node, split_clauses
+from tester_agent.graph.state import TaskState
+from tester_agent.graph.wrap import wrap
 from tester_agent.runtime.context import AppContext, DAOs, TaskContext
 from tester_agent.store.db import Database, run_migrations
 from tester_agent.store.models import (
@@ -175,10 +177,12 @@ async def _link_identify_passthrough(ctx, state) -> dict:
 
 
 def _graph(stack: Stack):
-    return build_graph(
-        stack.saver,
-        nodes={"intake": intake_node, "link_identify": _link_identify_passthrough},
-    )
+    """单测专用：仅挂 intake 节点（生产拓扑为控制环）。"""
+    g = StateGraph(TaskState)
+    g.add_node("intake", wrap(intake_node, name="intake"))
+    g.add_edge(START, "intake")
+    g.add_edge("intake", END)
+    return g.compile(checkpointer=stack.saver)
 
 
 def _cfg(stack: Stack, thread: str = "th-1") -> dict:
@@ -252,7 +256,7 @@ async def test_intake_no_ambiguity_persists_and_proceeds(make_stack):
     result = await graph.ainvoke({}, _cfg(stack))
 
     state = await graph.aget_state(_cfg(stack))
-    assert state.next == ("cp1_gate",)  # intake 完成并越过 link_identify 到静态断点
+    assert state.next == ()  # intake 完成
     refs = result["clauses"]
     assert [c["clause_id"] for c in refs] == ["h2-1", "h2-1-h3-1", "h2-1-h3-2", "h2-2"]
     assert result["clarification_questions"] == []
@@ -313,7 +317,7 @@ async def test_intake_resume_skips_llm_and_fills_answers(make_stack):
     # 关键（验收"重算 clause_id 稳定"的恢复侧）：恢复轮跳过 LLM，问题取自挂起凭据
     assert stack.llm.chat_calls == 1
     state = await graph.aget_state(cfg)
-    assert state.next == ("cp1_gate",)
+    assert state.next == ()
     assert state.values["clarification_questions"][0]["id"] == "q-1"
     assert len(state.values["clauses"]) == 4
     # 答复回填进挂起 message（dd §7.6 "回填 questions.answer"）
@@ -349,7 +353,7 @@ async def test_intake_ambiguity_disabled(make_stack):
     await graph.ainvoke({}, _cfg(stack))
     assert stack.llm.chat_calls == 0  # 检测关闭：零 LLM 调用
     state = await graph.aget_state(_cfg(stack))
-    assert state.next == ("cp1_gate",)
+    assert state.next == ()
     assert await MessageDAO(stack.db).list_by_task(TASK, kind="clarification_qa") == []
 
 

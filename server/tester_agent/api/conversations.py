@@ -3,10 +3,10 @@
 - 会话归属工作区（tech-design §5.2 标题约束）：POST /conversations 前置校验
   workspace 存在（404），GET /workspaces/{id}/conversations 同样先校验；
 - GET /conversations/{id}：会话详情（含任务摘要与分页消息，tech-design §5.2）；
-- POST /conversations/{id}/messages：落自由消息（chat/change_request）并刷新
-  会话 updated_at（ConversationDAO.touch）。tech-design §5.2 注"系统决定续跑
-  或回退（§4.2②）"——该触发语义属任务编排（WP-26 regenerate 入口接线），
-  本包只负责消息持久化；
+- POST /conversations/{id}/messages：落自由消息；kind=chat 跑 tool_agent 并落
+  assistant（payload.tool_trace）；kind=change_request 仅持久化。返回
+  SendMessageOut{user, assistant?}。刷新会话 updated_at。tech-design §5.2
+  续跑/回退属任务编排（regenerate），不在本包；
 - MessageOut 对齐 message 表字段 + author 展示名（dd §10.2；v1 无用户体系，
   按 role 映射固定展示名）。
 """
@@ -64,6 +64,11 @@ class MessageOut(BaseModel):
     payload: dict
     created_at: str
     author: str
+
+
+class SendMessageOut(BaseModel):
+    user: MessageOut
+    assistant: MessageOut | None = None  # set for kind=chat
 
 
 class TaskSummaryOut(BaseModel):
@@ -192,9 +197,11 @@ async def list_messages(
 @router.post("/conversations/{conversation_id}/messages", status_code=201)
 async def send_message(
     conversation_id: str, body: SendMessageIn, request: Request
-) -> MessageOut:
+) -> SendMessageOut:
+    from ..runtime.chat_agent import run_chat_turn
+
     conv_dao = ConversationDAO(_db(request))
-    await conv_dao.get(conversation_id)  # 404
+    conv = await conv_dao.get(conversation_id)  # 404
     msg = MessageRow.create(
         id=uuid.uuid4().hex,
         conversation_id=conversation_id,
@@ -205,4 +212,16 @@ async def send_message(
     )
     await MessageDAO(_db(request)).put(msg)
     await conv_dao.touch(conversation_id)  # §5.2 发消息刷新会话 updated_at
-    return _msg_out(msg)
+
+    assistant_out: MessageOut | None = None
+    if body.kind == "chat":
+        assistant = await run_chat_turn(
+            db=_db(request),
+            conv=conv,
+            file_store=request.app.state.file_store,
+            user_message=msg,
+        )
+        assistant_out = _msg_out(assistant)
+        await conv_dao.touch(conversation_id)
+
+    return SendMessageOut(user=_msg_out(msg), assistant=assistant_out)

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tester_agent.api.tasks import ConfirmIn
 from tester_agent.domain import AgentPlan, PlanStep, PlanStepKind
 from tester_agent.main import create_app
 from tester_agent.settings import Settings
@@ -104,15 +105,12 @@ def _seed_waiting_with_plan(db: Database):
     _run(_go())
 
 
-def test_confirm_requires_gate_kind(env):
-    client, db, _ = env
-    _seed_waiting_with_plan(db)
-    r = client.post(
-        f"/api/v1/tasks/{TASK}/confirm",
-        json={"action": "confirm", "artifact_id": "art-plan-1"},
+def test_confirm_omitted_gate_kind_defaults_plan_confirm():
+    """遗留客户端可省略 gate_kind；默认 plan_confirm。"""
+    body = ConfirmIn.model_validate(
+        {"action": "confirm", "artifact_id": "art-1"}
     )
-    # App maps request validation to 400 VALIDATION (not FastAPI default 422)
-    assert r.status_code in (400, 422)
+    assert body.gate_kind == "plan_confirm"
 
 
 def test_get_plan_returns_agent_plan(env):

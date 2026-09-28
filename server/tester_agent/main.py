@@ -8,9 +8,10 @@ WP-26 API-B tasks 路由（create/get/run/cancel/confirm/answer/rollback）
 + file_store/app_ctx 入 app.state（创建任务写 requirement.md 与回退/
 regenerate 入口共用）→ WP-27 API-C cases 路由（list/get/edit/review/
 regenerate/export，ExportService 经 app_ctx 懒构造）→ WP-28 API-D debug/kb 路由（traces/snapshots/playground/kb tree + kb 提案两阶段；
-kb_writer 入 app.state，默认 UnavailableWriter，WP-09 注册真实适配）→ WP-29
-Reconciler（DB↔文件三态对账，启动全量+手动端点）+ IdempotencyStore（内存
-TTL，review/regenerate/run 幂等去重）+ Maintenance 联动 .tmp/exports 清理。
+kb_writer 入 app.state：WP-09 起为 WorkspaceRoutingWriter（按工作区
+kb_config 路由 HTTP 写入；图路径仍不可达）→ WP-29 Reconciler（DB↔文件
+三态对账，启动全量+手动端点）+ IdempotencyStore（内存 TTL，review/
+regenerate/run 幂等去重）+ Maintenance 联动 .tmp/exports 清理。
 
 后续 WP 在此接线：静态托管 web/dist（WP-F0）。
 
@@ -28,7 +29,8 @@ from fastapi import FastAPI
 
 from . import __version__
 from .adapters.llm import OpenAICompatLLMClient
-from .adapters.reme import ReMeReaderFactory, UnavailableWriter
+from .adapters.reme import ReMeReaderFactory
+from .adapters.reme_http import WorkspaceRoutingWriter, register_service_builder
 from .api.agents import router as agents_router
 from .api.cases import router as cases_router
 from .api.config import router as config_router
@@ -93,10 +95,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime_cfg = cfg_row.runtime_dict()
         stale_sec = int(runtime_cfg.get("heartbeat_stale_sec", HEARTBEAT_STALE_SEC))
         reme_factory = ReMeReaderFactory()
+        register_service_builder(reme_factory)  # WP-09：mode=service → HTTP
         _app.state.reme_factory = reme_factory
-        # WP-28：ReMe 写实现仅 L2 提案确认端点可达（dd §9.2）；默认
-        # UnavailableWriter（502），WP-09 注册真实适配后替换本实例。
-        _app.state.kb_writer = UnavailableWriter()
+        # WP-09：写实现仅 L2 提案确认端点可达（dd §9.2 / PRD 7）；按工作区
+        # kb_config.target 路由，非 service 模式仍 502。
+        _app.state.kb_writer = WorkspaceRoutingWriter(db)
         # WP-29：进程内幂等键存储（dd §6.6 一期内存 TTL）
         idem_store = IdempotencyStore()
         _app.state.idem_store = idem_store

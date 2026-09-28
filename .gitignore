@@ -12,6 +12,11 @@ dist/
 venv/
 env/
 
+# Node
+node_modules/
+web/dist/
+web/coverage/
+
 # IDE
 .idea/
 .vscode/
@@ -31,3 +36,7 @@ coverage.xml
 
 # Logs
 *.log
+
+# Local env / data
+.env
+data/

@@ -22,6 +22,7 @@ import { ClarificationCard } from '../components/chat/ClarificationCard'
 import { MessageList } from '../components/chat/MessageList'
 import { RequirementInput } from '../components/chat/RequirementInput'
 import { GateConfirmCard } from '../components/session/GateConfirmCard'
+import { ReviewProposalCard } from '../components/session/ReviewProposalCard'
 import { ImpactPreview } from '../components/confirm/ImpactPreview'
 import { parseStageMention, stageLabel } from '../lib/parseStageMention'
 import { clearLastError, reportError } from '../stores/connection'
@@ -313,20 +314,33 @@ export function ChatPage() {
           ) : null}
           {checkpoint && taskId ? (
             <div className="mt-3" data-testid="checkpoint-banner">
-              <GateConfirmCard
-                taskId={taskId}
-                checkpoint={checkpoint}
-                onDone={() => {
-                  clearCheckpoint()
-                  void refreshTask(taskId)
-                }}
-              />
-              <Link
-                to="/confirm"
-                className="mt-2 inline-block text-sm font-medium text-teal-800 underline"
-              >
-                打开完整确认页（可选）→
-              </Link>
+              {checkpoint.gate_kind === 'review_decision' ? (
+                <ReviewProposalCard
+                  taskId={taskId}
+                  checkpoint={checkpoint}
+                  onDone={() => {
+                    clearCheckpoint()
+                    void refreshTask(taskId)
+                  }}
+                />
+              ) : (
+                <>
+                  <GateConfirmCard
+                    taskId={taskId}
+                    checkpoint={checkpoint}
+                    onDone={() => {
+                      clearCheckpoint()
+                      void refreshTask(taskId)
+                    }}
+                  />
+                  <Link
+                    to="/confirm"
+                    className="mt-2 inline-block text-sm font-medium text-teal-800 underline"
+                  >
+                    打开完整确认页（可选）→
+                  </Link>
+                </>
+              )}
             </div>
           ) : null}
           {impactResult ? (

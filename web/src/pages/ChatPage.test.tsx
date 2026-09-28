@@ -175,4 +175,34 @@ describe('WP-F1 ChatPage', () => {
       )
     })
   })
+
+  it('human_gate_waiting review_decision 展示 ReviewProposalCard', async () => {
+    const user = userEvent.setup()
+    ScriptedEventSource.script = [
+      {
+        type: 'human_gate_waiting',
+        data: {
+          stage: 'review_adoption',
+          artifact_id: 'art-rev-1',
+          stage_version: 1,
+          gate_kind: 'review_decision',
+          step_id: 's7',
+        },
+        id: '30',
+      },
+    ]
+
+    renderChat()
+    await screen.findByTestId('requirement-input')
+    await user.type(screen.getByTestId('requirement-textarea'), '## 需求 B')
+    await user.click(screen.getByTestId('requirement-submit'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('review-proposal-card')).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('gate-confirm-card')).toBeNull()
+    await waitFor(() => {
+      expect(screen.getByText(/覆盖主路径/)).toBeInTheDocument()
+    })
+  })
 })

@@ -16,7 +16,7 @@
 |---|---|
 | 设计 | `docs/superpowers/specs/2026-09-28-plan-execute-reflexion-design.md` |
 | 实现计划 | `docs/superpowers/plans/2026-09-28-plan-execute-reflexion.md` |
-| 状态 | Task 1–11 已落地主干（控制环/门禁/能力工具/子任务/评审提案/API gate_kind/Session 内联确认/场景测/文档同步）；遗留五阶段图经 `build_legacy_stage_graph` / `create_production(legacy=True)` 兼容旧测 |
+| 状态 | Task 1–11 已落地主干；**遗留五阶段拓扑已删除**——生产仅控制环；回退走 `start_run_from_plan`；confirm 统一 `gate_kind` 路径 |
 | 后续 | 将 capability 接到真实节点函数与 TaskContext；完善 ReviewProposal 前端卡片；同步 detailed-design 全量契约章节 |
 
 ## 1. 状态约定
@@ -89,6 +89,29 @@
 ## 3. 交接记录（按完成顺序倒序追加，最新在最上）
 
 <!-- 记录区开始：新记录插入到本行下方 -->
+
+### [PE-cleanup] 删除遗留五阶段拓扑 — done（2026-09-28）
+
+- 状态：done
+- 交付物：
+  - 删除 `build_legacy_stage_graph` / `legacy=` / 静态 `GATE_CP*`；生产仅控制环
+  - 回退：`start_run_from_plan`（AgentPlan 入口 + `as_node=plan`）
+  - confirm：统一 `gate_kind` 路径（含 expected_version / modify 落库）
+  - Runner：仅函数式 interrupt 收口；`human_gates` 从 runtime_config 注入
+  - 测试：`caps_from_stage_nodes` 注入假能力；intake/link 单测改 wrap 小图
+- 验收：PE/图/回退/API-B/e2e 相关用例通过（全量约 850+；少量 CLI/migration 预存失败与本包无关）
+- 遗留：coverage 自动补例改纯评审驱动；真实 LLM 联调
+
+### [PE-followups] Plan-Execute 后续 1→2→4→3 — done（2026-09-28）
+
+- 状态：done
+- 交付物：
+  - capability → 真实节点（`invoke_capability` + async `execute_step` + confirm 同步 link/point plan）
+  - Session 内 `ReviewProposalCard`（review_decision）
+  - e2e：`ConfirmIn.gate_kind` 默认 `plan_confirm`；`test_e2e_main` / 默认 gates 中断场景
+  - **detailed-design v0.4** 契约对齐控制环；tech-design 指针更新
+- 验收：相关 server/web 单测已绿（e2e_main、scenario_plan_execute、capability_wiring、ReviewProposalCard）
+- 遗留：coverage 自动补例改纯评审驱动；真实 LLM 联调
 
 ### [WP-X2] 收尾发布与文档回灌 — done（2026-09-28）
 

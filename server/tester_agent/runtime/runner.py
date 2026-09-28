@@ -35,15 +35,13 @@ from ..errors import (
     new_trace_id,
     trace_id_var,
 )
+from ..domain import PlanStepKind
 from ..graph.constants import (
-    GATE_CP1,
-    GATE_CP2,
     HEARTBEAT_INTERVAL_SEC,
     HEARTBEAT_STALE_SEC,
-    STAGE_LINK_IDENTIFY,
-    STAGE_POINT_WRITE,
 )
 from ..graph.registry import CASE_DESIGNER
+from ..tools.capabilities import KIND_TO_STAGE
 from ..logging_config import get_logger
 from ..runtime.bus import Emitter
 from ..store.models import (
@@ -367,10 +365,25 @@ class Runner:
         snapshot = await graph.aget_state(invoke_cfg)
         if snapshot.values:
             return None
+        gates = {"link": True, "point": True, "review": True}
+        cfg_dao = getattr(ctx.app, "config", None)
+        if cfg_dao is not None:
+            try:
+                crow = await cfg_dao.get()
+                rt = crow.runtime_dict() if crow is not None else {}
+            except Exception:  # noqa: BLE001 — 配置缺失时用默认门禁
+                rt = {}
+            if isinstance(rt, dict):
+                gates = {
+                    "link": bool(rt.get("human_gate_link", True)),
+                    "point": bool(rt.get("human_gate_point", True)),
+                    "review": bool(rt.get("human_gate_review", True)),
+                }
         return {
             "task_id": ctx.task.id,
             "graph_run_id": ctx.run_id,
             "workspace_id": ctx.task.workspace_id,
+            "human_gates": gates,
         }
 
     # ---- 终态收口 ----
@@ -392,25 +405,6 @@ class Runner:
             await ctx.emit("task_done", {"status": "completed"})
             return
 
-        # 静态 gate CP（CP1 在 link_identify 后；CP2 在 point_write 后）
-        if nxt and nxt[0] in (GATE_CP1, GATE_CP2):
-            stage = (
-                STAGE_LINK_IDENTIFY if nxt[0] == GATE_CP1 else STAGE_POINT_WRITE
-            )
-            artifact = await ctx.daos.artifact.get_active(ctx.task.id, stage)
-            await ctx.daos.task.update_status(
-                ctx.task.id, status="waiting_confirm", current_stage=stage
-            )
-            await ctx.emit(
-                "checkpoint_waiting",
-                {
-                    "stage": stage,
-                    "artifact_id": artifact.id if artifact else "",
-                    "stage_version": artifact.stage_version if artifact else 1,
-                },
-            )
-            return
-
         # 函数式 interrupt()：人机门禁或澄清
         node = nxt[0] if nxt else None
         questions: list = []
@@ -427,24 +421,38 @@ class Runner:
                         questions.extend(qs)
 
         if gate_payload is not None:
-            stage = str(
-                gate_payload.get("kind")
-                or gate_payload.get("step_id")
-                or node
-                or "await_human"
+            kind_raw = str(gate_payload.get("kind") or "")
+            stage = kind_raw or str(
+                gate_payload.get("step_id") or node or "await_human"
             )
+            try:
+                stage = KIND_TO_STAGE.get(PlanStepKind(kind_raw), stage)
+            except ValueError:
+                pass
+            art_id = gate_payload.get("artifact_id") or ""
+            stage_version = 1
+            if art_id:
+                try:
+                    art_row = await ctx.daos.artifact.get(art_id)
+                    stage_version = int(art_row.stage_version or 1)
+                except Exception:  # noqa: BLE001
+                    pass
+            elif stage:
+                active = await ctx.daos.artifact.get_active(ctx.task.id, stage)
+                if active is not None:
+                    art_id = active.id
+                    stage_version = int(active.stage_version or 1)
             await ctx.daos.task.update_status(
                 ctx.task.id, status="waiting_confirm", current_stage=stage
             )
             payload = {
                 "gate_kind": gate_payload.get("gate_kind"),
-                "artifact_id": gate_payload.get("artifact_id") or "",
+                "artifact_id": art_id,
                 "step_id": gate_payload.get("step_id"),
                 "stage": stage,
-                "stage_version": 1,
+                "stage_version": stage_version,
             }
             await ctx.emit("human_gate_waiting", payload)
-            # 兼容旧前端：同步发 checkpoint_waiting
             await ctx.emit("checkpoint_waiting", payload)
             return
 

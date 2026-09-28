@@ -1,15 +1,12 @@
 """ReMe 只读接入契约层（dd §8.4 能力位与降级 / §9.1 ReMeReader）。
 
-WP-08 范围（本模块不包含任何真实 ReMe 调用，WP-09 落地 reme_sdk/reme_http）：
+WP-08 范围（契约层）：冻结 ``ReMeCaps`` / ``Entry`` / ``IndexTree`` /
+``ReMeReader`` Protocol、``plan_fallbacks`` / ``IndexMirror`` /
+``ReMeReaderFactory`` 骨架。
 
-- 冻结契约：``ReMeCaps`` / ``Entry`` / ``IndexTree`` / ``ReMeReader`` Protocol
-  （Reader 不持有任何写方法，从类型上消灭图内写库路径，dd §9.1）；
-- 降级判定：``plan_fallbacks`` 按 caps 三态产出 FallbackPlan + DegradedStep 列表，
-  ``local_entry_version`` 提供 entry_version 能力缺失时的 ``h-<sha256前12位>``；
-- ``IndexMirror``：链路→故事两级只读索引树缓存，启动刷新 + TTL（runtime_config
-  ``index_mirror_ttl_min``，默认 60min），单飞刷新、失败保留旧镜像/空镜像降级；
-- ``ReMeReaderFactory``：按 ``(target, kb_id)`` 缓存 reader 实例，mode→builder
-  注册表（WP-09 注册 sdk/service 真实 builder），另提供连接测试用的一次性 probe。
+WP-09 真实适配见 ``adapters/reme_http.py``（``register_service_builder`` +
+``HttpReMeReader`` / ``HttpReMeWriter`` / ``WorkspaceRoutingWriter``）；
+本模块仍不直接发起 ReMe HTTP 调用。
 
 dd 缺口补型（交接单已登记，不碰冻结字段）：§9.1 引用了 ``IndexTree`` 但未给类
 定义，按其 docstring（title/一句话/entry_id/version/归属）与 tech-design §4.3

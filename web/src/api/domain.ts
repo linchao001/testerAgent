@@ -209,6 +209,29 @@ export type CheckpointWaiting = {
   step_id?: string
 }
 
+export type ReviewProposalItemAction =
+  | 'adopt'
+  | 'edit_adopt'
+  | 'reject'
+  | 'add_point'
+  | 'add_case'
+  | 'repair'
+
+export type ReviewProposalItem = {
+  target_id: string
+  action: ReviewProposalItemAction
+  rationale: string
+  confidence: number
+  patch?: Record<string, unknown> | null
+}
+
+export type ReviewProposal = {
+  scope: string
+  items: ReviewProposalItem[]
+  matrix_ref?: string | null
+  degraded?: boolean
+}
+
 export type ImpactAnalysis = {
   target_stage: string
   affected_point_ids?: string[]

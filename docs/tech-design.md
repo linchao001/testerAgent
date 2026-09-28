@@ -9,6 +9,8 @@
 
 > v0.3 变更摘要（WP-X2）：① §8 S1~S7 全部写入一期结论；② §9 开放问题与 PRD v0.7 对齐（Q1/Q2/Q6/Q7/Q11/Q12 closed）；③ 备份 CLI / 导出·提案发布门禁见 detailed-design §19.5 与 `docs/plan/release-checklist.md`。
 >
+> **实现级契约**：[detailed-design.md v0.4](file:///D:/code/github/testerAgent/docs/detailed-design.md) 已对齐 Plan-Execute（控制环 §7、ConfirmIn.gate_kind、SessionPage、迁移 004）。
+>
 > v0.2 变更摘要：针对 v0.1 两轮架构评审（共 39 条意见，处理记录见[附录 A](#附录-a评审意见处理记录)）修订，主要变化：
 > ① 新增 §2.1/§4.5 执行模型（Runner、进程内事件总线、重启 reaper、任务互斥与取消、单 worker 约束、LLMClient 韧性）；
 > ② §3.2/§3.3 补回退与 checkpoint 协调语义、回退影响面分析、DB↔文件原子写入与对账协议；
@@ -47,9 +49,9 @@
 │   TaskRegistry：任务互斥锁 / 取消令牌 / 运行态注册表        │
 ├─────────────────────────────────────────────────────────┤
 │ L3 编排层  server/graph (LangGraph)                      │
-│   主图：需求解析→链路识别→[CP1]→测试点编写→[CP2]           │
-│        →用例生成→覆盖校验→产出                             │
-│   子图：精准检索管线（多路召回→过滤→重排→段落抽取→预算截断）  │
+│   控制环：plan→dispatch→execute_step→await_human→reflect │
+│   能力：intake / link_identify / point_write / case_generate │
+│   子管线：精准检索（多路召回→过滤→重排→段落抽取→预算截断）  │
 │   Runtime：Runner（图执行宿主）+ EventBus（进程内发布订阅） │
 ├─────────────────────────────────────────────────────────┤
 │ L4 接入层  server/adapters                               │
@@ -346,7 +348,7 @@ testcase.file_path、context_snapshot.snapshot_path 均存相对 `data/` 的路�
 
 ## 4. LangGraph 图设计
 
-> **2026-09-28 范式更新**：生产主图改为控制环 `plan → dispatch → execute_step → await_human → reflect`（动态 Plan-Execute + Reflexion）。旧五阶段拓扑保留为 `build_legacy_stage_graph`。完整契约见 [plan-execute-reflexion 设计](../superpowers/specs/2026-09-28-plan-execute-reflexion-design.md)。下文 §4.1–§4.2 描述的是**遗留阶段图**语义（能力函数仍按阶段实现，由控制环 dispatch）。
+> **2026-09-28 范式更新**：生产主图为控制环 `plan → dispatch → execute_step → await_human → reflect`（动态 Plan-Execute + Reflexion）。阶段能力（intake / link_identify / …）由 `execute_step` 经 `invoke_capability` 调度，不再作为 StateGraph 拓扑节点。完整契约见 [plan-execute-reflexion 设计](../superpowers/specs/2026-09-28-plan-execute-reflexion-design.md)。下文 §4.1–§4.2 描述的是**阶段能力语义**（由控制环 dispatch）。
 
 ### 4.1 主图状态（State）
 

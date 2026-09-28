@@ -357,10 +357,16 @@ async def generate_case_batch(
         + "\n\n"
         + loader.load(_MAIN_PROMPT).content.strip()
     )
+    from ..tool_gather import append_tool_notes, gather_notes_for_ctx
+
     user_content = "\n".join([
         render_points_block(points, clause_texts),
         render_knowledge_block(outcome.items, ctx.mirror),
     ])
+    notes = await gather_notes_for_ctx(
+        ctx, "case_generate", "查看工作区文件，辅助生成测试用例"
+    )
+    user_content = append_tool_notes(user_content, notes)
     messages: list[dict] = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_content},

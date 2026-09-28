@@ -4,7 +4,7 @@
   init-db   迁移 + 内置 agent 种子 + config 单行（WP-02 接线）
   reap      手动触发 Reaper/对账（WP-23/WP-29 接线，排障用）
   check     DB/目录/依赖体检
-  backup    两 DB 在线备份 + workspaces/ 打包（WP-X2 接线）
+  backup    两 DB 在线备份 + workspaces/ 打包（WP-X2 / dd §19.5）
 """
 
 from __future__ import annotations
@@ -47,9 +47,14 @@ def cmd_reap(_settings: Settings, _args: argparse.Namespace) -> int:
     return _not_implemented("reap", "WP-23")
 
 
-def cmd_backup(_settings: Settings, _args: argparse.Namespace) -> int:
-    # WP-X2：SQLite backup API + workspaces/ 打包
-    return _not_implemented("backup", "WP-X2")
+def cmd_backup(settings: Settings, args: argparse.Namespace) -> int:
+    """两 DB 在线备份 + workspaces/ 打包（dd §19.5）。"""
+    from .store.backup import run_backup
+
+    out_dir = Path(args.out_dir).expanduser()
+    report = run_backup(data_dir=settings.data_dir, out_dir=out_dir)
+    print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    return 0 if report.ok else 1
 
 
 def cmd_check(settings: Settings, _args: argparse.Namespace) -> int:
@@ -68,8 +73,18 @@ def cmd_check(settings: Settings, _args: argparse.Namespace) -> int:
         report["data_dir_writable"] = False
         report["data_dir_error"] = str(exc)
 
+    try:
+        from .tools.shell_backend import detect_shell_backend
+
+        kind, argv = detect_shell_backend("auto")
+        report["shell_backend"] = {"kind": kind, "argv0": argv[0], "ok": True}
+        shell_ok = True
+    except Exception as exc:  # noqa: BLE001 — surface any detection failure
+        report["shell_backend"] = {"ok": False, "error": str(exc)}
+        shell_ok = False
+
     deps_ok = all(report["deps"].values())
-    ok = report["python_ok"] and deps_ok and report["data_dir_writable"]
+    ok = report["python_ok"] and deps_ok and report["data_dir_writable"] and shell_ok
     report["ok"] = ok
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if ok else 1
@@ -78,8 +93,15 @@ def cmd_check(settings: Settings, _args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tester_agent", description="TesterAgent 运维 CLI")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("init-db", "reap", "backup", "check"):
-        sub.add_parser(name)
+    sub.add_parser("init-db")
+    sub.add_parser("reap")
+    backup_p = sub.add_parser("backup", help="SQLite 在线备份 + workspaces/ 打包")
+    backup_p.add_argument(
+        "out_dir",
+        type=str,
+        help="备份输出目录（将写入 app.db / checkpoints.db / workspaces/）",
+    )
+    sub.add_parser("check")
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()

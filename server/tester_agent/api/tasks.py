@@ -54,6 +54,7 @@ from ..domain import (
     LinkPlan,
     MessageKind,
     MessageRole,
+    PlanStepKind,
     PointPlan,
     RequirementRef,
     ReviewProposal,
@@ -78,6 +79,7 @@ from ..logging_config import get_logger
 from ..runtime.bus import Emitter
 from ..runtime.context import DAOs, TaskContext
 from ..runtime.runner import validate_transition
+from ..tools.capabilities import legacy_state_from_artifact
 from ..store.models import (
     ArtifactDAO,
     ArtifactRow,
@@ -167,7 +169,8 @@ class CancelOut(BaseModel):
 
 
 class ConfirmIn(BaseModel):
-    gate_kind: Literal["plan_confirm", "review_decision"]
+    #: plan_confirm（阶段产物）或 review_decision（评审提案）
+    gate_kind: Literal["plan_confirm", "review_decision"] = "plan_confirm"
     artifact_id: str = Field(min_length=1)
     action: Literal["confirm", "modify", "reject_rerun"] = "confirm"
     expected_version: int | None = None
@@ -492,54 +495,52 @@ async def confirm_task(task_id: str, body: ConfirmIn, request: Request) -> Confi
     if artifact.task_id != task_id:
         raise NotFoundError(f"阶段产物不存在：{body.artifact_id}")
 
-    legacy_stages = {STAGE_LINK_IDENTIFY, STAGE_POINT_WRITE}
-    use_legacy = body.stage in legacy_stages and body.expected_version is not None
+    stage = body.stage or artifact.stage
+    if body.stage is not None and artifact.stage != body.stage:
+        raise ValidationError(
+            "产物阶段与确认阶段不一致",
+            details={"artifact_stage": artifact.stage, "stage": body.stage},
+        )
+    if body.expected_version is not None and artifact.stage_version != body.expected_version:
+        raise VersionConflict(
+            f"产物版本冲突：期望 v{body.expected_version}，"
+            f"实际 v{artifact.stage_version}",
+            details={
+                "expected": body.expected_version,
+                "actual": artifact.stage_version,
+            },
+        )
+    active = await artifact_dao.get_active(task_id, artifact.stage)
+    if active is None or active.id != artifact.id:
+        raise ValidationError(
+            "产物不是该阶段当前 active 版本",
+            details={"artifact_id": body.artifact_id, "stage": artifact.stage},
+        )
 
-    if use_legacy:
-        if artifact.stage != body.stage:
-            raise ValidationError(
-                "产物阶段与确认阶段不一致",
-                details={"artifact_stage": artifact.stage, "stage": body.stage},
-            )
-        if artifact.stage_version != body.expected_version:
-            raise VersionConflict(
-                f"产物版本冲突：期望 v{body.expected_version}，"
-                f"实际 v{artifact.stage_version}",
-                details={
-                    "expected": body.expected_version,
-                    "actual": artifact.stage_version,
-                },
-            )
-        active = await artifact_dao.get_active(task_id, body.stage)
-        if active is None or active.id != artifact.id:
-            raise ValidationError(
-                "产物不是该阶段当前 active 版本",
-                details={"artifact_id": body.artifact_id, "stage": body.stage},
-            )
+    if body.action == "modify" and body.payload is None:
+        raise ValidationError("modify 动作必须携带修订 payload")
 
-        if body.action == "confirm":
-            await artifact_dao.mark_confirmed(artifact.id, by="user")
-            await runner.start(task_id, event="confirm")
-            return ConfirmOut(
-                task_id=task_id,
-                status="running",
-                artifact_id=artifact.id,
-                stage_version=artifact.stage_version,
-            )
+    out_artifact_id = artifact.id
+    out_version = artifact.stage_version
+    confirmed_payload = artifact.payload_dict()
 
-        if body.payload is None:
-            raise ValidationError("modify 动作必须携带修订 payload")
-        _validate_revision_payload(body.stage, body.payload)
-
+    # plan_confirm + modify：落 user_revised 新版本
+    if (
+        body.gate_kind == "plan_confirm"
+        and body.action == "modify"
+        and body.payload is not None
+        and stage in _STAGE_STATE_KEY
+    ):
+        _validate_revision_payload(stage, body.payload)
         async with db.immediate_tx():
             await artifact_dao.supersede(artifact.id)
-            v = await artifact_dao.next_version(task_id, body.stage)
+            v = await artifact_dao.next_version(task_id, stage)
             new_id = uuid.uuid4().hex
             await artifact_dao.put(
                 ArtifactRow.create(
                     id=new_id,
                     task_id=task_id,
-                    stage=body.stage,
+                    stage=stage,
                     graph_run_id=artifact.graph_run_id,
                     stage_version=v,
                     origin="user_revised",
@@ -554,44 +555,35 @@ async def confirm_task(task_id: str, body: ConfirmIn, request: Request) -> Confi
                     conversation_id=task.conversation_id,
                     role=MessageRole.USER,
                     kind=MessageKind.CHECKPOINT_REVISION,
-                    content=f"修订 {body.stage} 产物 v{artifact.stage_version} → v{v}",
+                    content=f"修订 {stage} 产物 v{artifact.stage_version} → v{v}",
                     task_id=task_id,
                     ref_artifact_id=new_id,
                     payload={
-                        "stage": body.stage,
+                        "stage": stage,
                         "old_version": artifact.stage_version,
                         "new_version": v,
                     },
                 )
             )
+        out_artifact_id = new_id
+        out_version = v
+        confirmed_payload = body.payload
+        artifact = await artifact_dao.get(new_id)
+    elif body.action != "reject_rerun":
+        await artifact_dao.mark_confirmed(artifact.id, by="user")
 
-        graph = request.app.state.graphs.get(CASE_DESIGNER)
-        await graph.aupdate_state(
-            {"configurable": {"thread_id": task.langgraph_thread_id}},
-            {_STAGE_STATE_KEY[body.stage]: body.payload},
-        )
-        await runner.start(task_id, event="confirm")
-        return ConfirmOut(
-            task_id=task_id,
-            status="running",
-            artifact_id=new_id,
-            stage_version=v,
-        )
-
-    # ---- Plan-Execute path (gate_kind) ----
     decision = HumanDecision(
         gate_kind=body.gate_kind,
         action=body.action,  # type: ignore[arg-type]
-        artifact_id=body.artifact_id,
+        artifact_id=out_artifact_id,
         payload=body.payload,
     )
-    art_payload = artifact.payload_dict()
     artifacts_map = {
-        artifact.id: {
+        out_artifact_id: {
             "kind": artifact.kind or artifact.stage,
-            "version": artifact.stage_version,
-            "confirmed_by": artifact.confirmed_by,
-            "payload": art_payload,
+            "version": out_version,
+            "confirmed_by": "user",
+            "payload": confirmed_payload,
         }
     }
     plan: AgentPlan | None = None
@@ -613,9 +605,7 @@ async def confirm_task(task_id: str, body: ConfirmIn, request: Request) -> Confi
             artifacts=artifacts_map,
             case_review_updates=case_updates,
         )
-        # persist plan + confirm marker
         async with db.immediate_tx():
-            await artifact_dao.mark_confirmed(artifact.id, by="user")
             if task.current_plan_artifact_id:
                 await artifact_dao.supersede(task.current_plan_artifact_id)
                 v = await artifact_dao.next_version(task_id, "agent_plan")
@@ -637,15 +627,31 @@ async def confirm_task(task_id: str, body: ConfirmIn, request: Request) -> Confi
                 await task_dao.set_current_plan_artifact(task_id, new_plan_id)
             for case_id, status in case_updates:
                 await TestcaseDAO(db).update_review(case_id, status)
-    else:
-        await artifact_dao.mark_confirmed(artifact.id, by="user")
 
     graph = request.app.state.graphs.get(CASE_DESIGNER)
     resume_payload = {
         "action": body.action,
-        "payload": body.payload,
+        "payload": body.payload if body.action == "modify" else None,
         "gate_kind": body.gate_kind,
     }
+    kind_key = artifact.kind or artifact.stage or ""
+    kind_alias = {
+        "coverage_design": PlanStepKind.COVERAGE_DESIGN,
+        "link_identify": PlanStepKind.COVERAGE_DESIGN,
+        "point_plan": PlanStepKind.POINT_DESIGN,
+        "point_write": PlanStepKind.POINT_DESIGN,
+        "clauses": PlanStepKind.INTAKE_PARSE,
+        "case_set": PlanStepKind.CASE_GENERATE,
+        "case_generate": PlanStepKind.CASE_GENERATE,
+    }
+    step_kind = kind_alias.get(kind_key)
+    state_sync = (
+        legacy_state_from_artifact(step_kind, confirmed_payload)
+        if step_kind is not None
+        else {}
+    )
+    if stage in _STAGE_STATE_KEY and body.action == "modify" and body.payload is not None:
+        state_sync[_STAGE_STATE_KEY[stage]] = body.payload
     try:
         await graph.aupdate_state(
             {"configurable": {"thread_id": task.langgraph_thread_id}},
@@ -655,6 +661,7 @@ async def confirm_task(task_id: str, body: ConfirmIn, request: Request) -> Confi
                     for k, v in artifacts_map.items()
                 },
                 **({"agent_plan": plan.model_dump()} if plan is not None else {}),
+                **state_sync,
             },
         )
     except Exception:  # noqa: BLE001 — control graph may not have checkpoint yet
@@ -668,8 +675,8 @@ async def confirm_task(task_id: str, body: ConfirmIn, request: Request) -> Confi
     return ConfirmOut(
         task_id=task_id,
         status="running",
-        artifact_id=artifact.id,
-        stage_version=artifact.stage_version,
+        artifact_id=out_artifact_id,
+        stage_version=out_version,
     )
 
 

@@ -30,7 +30,7 @@ def _set_old(path: Path, days: int) -> None:
 
 def test_soft_cleanup_removes_stale_tmp(tmp_path):
     store = FileStore(tmp_path / "fs")
-    task_dir = store._root / "workspaces" / "ws-1" / "tasks" / "task-1" / "cases" / "v1"
+    task_dir = store._root / "workspaces" / "ws-1" / "task-1" / "cases" / "v1"
     task_dir.mkdir(parents=True)
     # 过期 .tmp → 应删
     stale = task_dir / "case-xxx.md.tmp.abc"
@@ -60,8 +60,9 @@ def test_soft_cleanup_no_workspaces_dir(tmp_path):
 
 def test_cleanup_exports_removes_stale_job_dir(tmp_path):
     store = FileStore(tmp_path / "fs")
+    # 对齐 FileStore._task_dir：workspaces/{ws}/{task}/exports
     exports = (
-        store._root / "workspaces" / "ws-1" / "tasks" / "task-1" / "exports"
+        store._root / "workspaces" / "ws-1" / "task-1" / "exports"
     )
     # 过期 job 目录 → 整目录删
     stale_job = exports / "job-old"
@@ -82,7 +83,7 @@ def test_cleanup_exports_removes_stale_job_dir(tmp_path):
 
 def test_cleanup_exports_keeps_cases_and_snapshots(tmp_path):
     store = FileStore(tmp_path / "fs")
-    task_dir = store._root / "workspaces" / "ws-1" / "tasks" / "task-1"
+    task_dir = store._root / "workspaces" / "ws-1" / "task-1"
     cases = task_dir / "cases" / "v1"
     cases.mkdir(parents=True)
     (cases / "case.md").write_text("# c\n")
@@ -109,7 +110,7 @@ def test_maintenance_lazy_purge_invokes_file_cleanup(tmp_path):
     db = Database(db_path)
 
     store = FileStore(tmp_path / "fs2")
-    task_dir = store._root / "workspaces" / "ws-1" / "tasks" / "task-1"
+    task_dir = store._root / "workspaces" / "ws-1" / "task-1"
     cases = task_dir / "cases" / "v1"
     cases.mkdir(parents=True)
     stale_tmp = cases / "x.md.tmp.1"

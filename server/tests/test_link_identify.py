@@ -2,7 +2,7 @@
 
 验收口径（WBS #17）：
 - "FakeLLM 脚本驱动产物断言"：index_line 档检索 → LLM LinkPlan →
-  artifact(active, v1, confirmed_by=null) 落库，图停在 cp1_gate；
+  artifact(active, v1, confirmed_by=null) 落库；
 - "幻觉 entry 降 hit=false"：模型对不在注入白名单的 entry_id 断言 hit →
   服务端改写为 new-link/new-story、记 trace.degraded、hallucinated_ids 回填。
 
@@ -22,6 +22,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -30,7 +31,6 @@ from tester_agent.adapters.reme import Entry, IndexMirror
 from tester_agent.domain import EntryType, InjectedItem
 from tester_agent.errors import AppError, LLMBadOutput
 from tester_agent.graph.constants import STAGE_LINK_IDENTIFY
-from tester_agent.graph.main_graph import build_graph
 from tester_agent.graph.nodes import (
     build_link_intent,
     finalize_link_plan,
@@ -38,6 +38,8 @@ from tester_agent.graph.nodes import (
     link_identify_node,
     render_knowledge_block,
 )
+from tester_agent.graph.state import TaskState
+from tester_agent.graph.wrap import wrap
 from tester_agent.runtime.context import AppContext, DAOs, TaskContext
 from tester_agent.store.db import Database, run_migrations
 from tester_agent.store.models import (
@@ -341,13 +343,14 @@ class Stack:
 
 
 def _graph(stack: Stack):
-    return build_graph(
-        stack.saver,
-        nodes={
-            "intake": intake_node,
-            STAGE_LINK_IDENTIFY: link_identify_node,
-        },
-    )
+    """单测专用线性图：intake → link_identify（生产拓扑为控制环）。"""
+    g = StateGraph(TaskState)
+    g.add_node("intake", wrap(intake_node, name="intake"))
+    g.add_node(STAGE_LINK_IDENTIFY, wrap(link_identify_node, name=STAGE_LINK_IDENTIFY))
+    g.add_edge(START, "intake")
+    g.add_edge("intake", STAGE_LINK_IDENTIFY)
+    g.add_edge(STAGE_LINK_IDENTIFY, END)
+    return g.compile(checkpointer=stack.saver)
 
 
 def _cfg(stack: Stack, thread: str = "th-1") -> dict:
@@ -449,7 +452,7 @@ async def test_happy_path_artifact_v1_and_trace_closed(make_stack):
     result = await graph.ainvoke({}, _cfg(stack))
 
     state = await graph.aget_state(_cfg(stack))
-    assert state.next == ("cp1_gate",)  # 过 intake/link_identify，断在 CP1 静态门
+    assert state.next == ()  # intake + link_identify 完成
     plan = result["link_plan"]
     assert [l["link_id"] for l in plan["links"]] == ["L1", "L2", "new-link-1"]
     assert [s["story_id"] for s in plan["stories"]] == ["S1", "S2", "new-story-1"]
@@ -553,7 +556,7 @@ async def test_clarification_interrupt_then_resume_generates(make_stack):
 
     await graph.ainvoke(Command(resume=ANSWERS), cfg)
     state = await graph.aget_state(cfg)
-    assert state.next == ("cp1_gate",)
+    assert state.next == ()
     art = await _active_artifact(stack.db)
     assert art is not None and art.payload_dict()["links"]
     mp2 = json.loads(

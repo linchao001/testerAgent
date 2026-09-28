@@ -436,3 +436,33 @@ def _parse_retry_after(exc: RateLimitError) -> float | None:
         return max(0.0, float(raw))
     except ValueError:
         return None
+
+
+def get_chat_model(*, model_config: dict, runtime_config: dict):
+    """LangChain ChatOpenAI for tool-agent path (tech-design D7).
+
+    Existing ``OpenAICompatLLMClient.chat`` remains for json_schema stages.
+    """
+    from langchain_openai import ChatOpenAI
+
+    if not model_config.get("base_url") or not model_config.get("api_key") or not model_config.get("model"):
+        raise LLMBadRequest(
+            "LLM 客户端配置不完整：base_url/api_key/model 均不可为空",
+            details={
+                "has_base_url": bool(model_config.get("base_url")),
+                "has_api_key": bool(model_config.get("api_key")),
+                "model": model_config.get("model"),
+            },
+        )
+    read_timeout = float(
+        model_config.get("timeout") or runtime_config.get("llm_timeout_read_sec", 120)
+    )
+    return ChatOpenAI(
+        model=model_config.get("model"),
+        api_key=model_config.get("api_key"),
+        base_url=model_config.get("base_url"),
+        temperature=float(model_config.get("temperature", 0.2)),
+        top_p=float(model_config.get("top_p", 1.0)),
+        timeout=read_timeout,
+        max_retries=0,
+    )

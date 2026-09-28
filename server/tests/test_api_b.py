@@ -72,6 +72,7 @@ from tester_agent.graph.constants import (
 )
 from tester_agent.graph.main_graph import build_graph
 from tester_agent.graph.registry import CASE_DESIGNER, GraphRegistry
+from tester_agent.tools.capabilities import caps_from_stage_nodes
 from tester_agent.runtime.bus import EventBus
 from tester_agent.runtime.context import AppContext
 from tester_agent.runtime.regenerate import regenerate_cases
@@ -273,6 +274,23 @@ def _wait_status(db, task_id, want, *, timeout=6.0):
     )
 
 
+def _wait_clarification(db, task_id, *, timeout=6.0):
+    """等待澄清 interrupt 落账（须见 clarification_needed，避免命中 seed 的 waiting_input）。"""
+    deadline = time.time() + timeout
+    row = None
+    while time.time() < deadline:
+        row = _get_task(db)
+        events = _events(db, task_id)
+        if row.status == "waiting_input" and any(
+            e.type == "clarification_needed" for e in events
+        ):
+            return row
+        time.sleep(0.05)
+    raise AssertionError(
+        f"等待 clarification 超时，最后状态：{row.status if row else None}"
+    )
+
+
 def _wait_confirm_at(db, task_id, stage, *, timeout=6.0):
     """等待"恢复执行后停在 stage 的检查点"。
 
@@ -423,9 +441,14 @@ def _make_app(
         saver = AsyncSqliteSaver(conn)
         await saver.setup()
         g = graph if graph is not None else build_graph(
-            saver, nodes=nodes or _default_nodes()
+            saver, caps=caps_from_stage_nodes(nodes or _default_nodes())
         )
         db = Database(db_path)
+        # API-B 场景覆盖到 case 后完成；关闭评审门禁以匹配原五阶段验收口径
+        cfg = ConfigDAO(db)
+        rt = (await cfg.get()).runtime_dict()
+        rt["human_gate_review"] = False
+        await cfg.update_runtime(rt)
         graphs = GraphRegistry.from_graph(CASE_DESIGNER, g)
         bus = EventBus(EventDAO(db))
         registry = TaskRegistry(TaskDAO(db))
@@ -918,7 +941,7 @@ class TestTaskAnswer:
             client, db = env.client, env.db
             _run(_seed_task(db))
             client.post(f"/api/v1/tasks/{TASK}/run")
-            _wait_status(db, TASK, "waiting_input")
+            _wait_clarification(db, TASK)
             assert _get_task(db).current_stage == STAGE_INTAKE
 
             r = client.post(f"/api/v1/tasks/{TASK}/answer", json={
@@ -948,7 +971,7 @@ class TestTaskAnswer:
             client, db = env.client, env.db
             _run(_seed_task(db))
             client.post(f"/api/v1/tasks/{TASK}/run")
-            _wait_status(db, TASK, "waiting_input")
+            _wait_clarification(db, TASK)
             r = client.post(f"/api/v1/tasks/{TASK}/answer", json={
                 "answers": [{"answer": "x"}],
             })
@@ -961,7 +984,7 @@ class TestTaskAnswer:
             client, db = env.client, env.db
             _run(_seed_task(db))
             client.post(f"/api/v1/tasks/{TASK}/run")
-            _wait_status(db, TASK, "waiting_input")
+            _wait_clarification(db, TASK)
             r = client.post(f"/api/v1/tasks/{TASK}/answer", json={
                 "answers": [{"question_id": "q1"}],
             })

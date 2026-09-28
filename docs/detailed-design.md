@@ -2,17 +2,20 @@
 
 | 项 | 内容 |
 |---|---|
-| 版本 | v0.2 |
-| 状态 | 待评审 |
-| 日期 | 2026-09-26 |
-| 上游设计 | [tech-design.md v0.2](file:///Users/test/Documents/python_project/testerAgent/docs/tech-design.md) |
-| 对应需求 | [PRD.md v0.6](file:///Users/test/Documents/python_project/testerAgent/docs/PRD.md) |
+| 版本 | v0.4 |
+| 状态 | 一期候选发布 |
+| 日期 | 2026-09-28 |
+| 上游设计 | [tech-design.md v0.3](file:///D:/code/github/testerAgent/docs/tech-design.md) |
+| 对应需求 | [PRD.md v0.7](file:///D:/code/github/testerAgent/docs/PRD.md) |
+| 控制面范式 | [plan-execute-reflexion 设计](file:///D:/code/github/testerAgent/docs/superpowers/specs/2026-09-28-plan-execute-reflexion-design.md) |
 
+> v0.4 变更摘要（Plan-Execute）：① 生产主图为控制环 `plan → dispatch → execute_step → await_human → reflect`（§7）；阶段节点函数能力化（`invoke_capability`）；② §2.10 增补 AgentPlan / ReviewProposal / HumanDecision；③ §3 迁移 004（`current_plan_artifact_id`、`artifact.kind`、`subtask`）；④ §10 ConfirmIn 增 `gate_kind`（缺省 `plan_confirm`）及 plan/review-proposals 端点；⑤ §12 会话优先 SessionPage + GateConfirmCard / ReviewProposalCard。
+> v0.3 变更摘要（WP-X2 / C6 收口）：① Q1 定稿为本节 §4.2 v1 模板；Q2 定稿为 §9.4 MD zip（Excel 二期）；② §19.5 `cli backup <out_dir>` 已接线（SQLite online backup + workspaces/）；③ `cleanup_exports` 路径对齐 `workspaces/{ws}/{task}/exports`（修正误扫 `*/tasks/*`）；④ 发布门禁见 `docs/plan/release-checklist.md`；S3~S7 结论回灌 tech-design §8。
 > v0.2 变更摘要：补全 §2.9 运行期辅助类型（ImpactAnalysis/BatchProgress/ErrorInfo/ClosedLoop）；新增 §17 异常体系（类层次、翻译边界、trace_id）、§18 端到端时序（主场景/崩溃恢复/回退继承/提案异常路径）、§19 依赖与一键部署（pyproject、dev.sh、init-db 种子、备份）、§20 Prompt 模板 v1 正文、§21 开工前检查清单与文档维护约定；kb_proposal 增 fail_count 列。
 > v0.2 裁决补记（2026-09-26）：testcase 增 `created_at` 列（002 迁移，schema_version=2），用例列表分页游标时间列由 updated_at 改为 created_at；task.requirement_ref 补领域类型名 RequirementRef。
 > v0.1：首版 16 章（领域模型、DDL、文件规范、存储/运行时、图与检索子图、适配器、API、一致性协议、前端、配置、错误码、测试、实施切片）。
 
-> 本文是 tech-design v0.2 的实现级细化：精确 DDL、领域对象 schema、模块/函数级接口、图节点与 Prompt 契约、关键流程伪代码、API 请求响应模型、错误码目录与测试策略。文中 Python 代码为接口契约与核心逻辑示意（类型签名即约定），非最终实现逐行代码。
+> 本文是 tech-design 的实现级细化：精确 DDL、领域对象 schema、模块/函数级接口、图节点与 Prompt 契约、关键流程伪代码、API 请求响应模型、错误码目录与测试策略。文中 Python 代码为接口契约与核心逻辑示意（类型签名即约定），非最终实现逐行代码。**编排真相以控制环 + 能力函数为准**；§7.2 起的阶段节点描述继续作为能力实现契约（由 `invoke_capability` 调度）。
 
 ---
 
@@ -22,10 +25,12 @@
 
 | 读者 | 建议章节 |
 |---|---|
-| 后端开发 | §3 DDL/DAO → §5 存储 → §6 运行时 → §7 图 → §8 检索 → §10 API |
-| 前端开发 | §10 API schema/错误码 → §12 前端结构 → §6.4 SSE 线协议 |
-| 测试 | §14 错误码 → §15 测试策略 → §6.3 状态机 |
-| 评审 | §2 领域模型 → §7.4 Prompt 契约 → §11 一致性协议 |
+| 后端开发 | §3 DDL/DAO → §5 存储 → §6 运行时 → **§7 控制环+能力** → §8 检索 → §10 API |
+| 前端开发 | §10 API schema/错误码 → **§12 SessionPage** → §6.2/§10.4 SSE |
+| 测试 | §14 错误码 → §15 测试策略 → §6.3 状态机 → §7.1 控制环挂起语义 |
+| 评审 | §2 领域模型（含 §2.10 Plan-Execute）→ §7.4 Prompt 契约 → §11 一致性协议 |
+
+范式权威：控制面行为以 [plan-execute-reflexion 设计](file:///D:/code/github/testerAgent/docs/superpowers/specs/2026-09-28-plan-execute-reflexion-design.md) 为准；tech-design §4 已标注遗留阶段图语义。
 
 ### 1.2 通用约定
 
@@ -48,6 +53,10 @@ STAGE_CASE_GENERATE   = "case_generate"
 STAGE_COVERAGE_CHECK  = "coverage_check"
 STAGE_REVIEW_EXPORT   = "review_export"
 CHECKPOINT_1, CHECKPOINT_2 = "checkpoint1", "checkpoint2"
+
+# Plan-Execute 步骤 kind 见 domain.PlanStepKind（字符串，不建 SQL 枚举）
+# 能力映射：intake_parse→intake / coverage_design→link_identify /
+#           point_design→point_write / case_generate→case_generate
 
 BATCH_DEFAULT_SIZE = 5
 HEARTBEAT_INTERVAL_SEC = 10
@@ -101,6 +110,9 @@ class MessageKind(StrEnum):
     CHECKPOINT_REVISION = "checkpoint_revision"
     CHANGE_REQUEST = "change_request"
     REGEN_INSTRUCTION = "regen_instruction"
+    PLAN_REVISION = "plan_revision"
+    REVIEW_DECISION = "review_decision"
+    GATE_CONFIRM = "gate_confirm"
 
 class EntryType(StrEnum):   # ReMe 五类知识
     BUSINESS = "business"; FLOW_CASE = "flow_case"; DEFECT = "defect"
@@ -188,7 +200,7 @@ class CaseFileContent(BaseModel):     # 与 MD 文件 front-matter/正文一一�
     priority: Literal["P0","P1","P2"]
     preconditions: list[str]
     steps: list[CaseStep]
-    expected: list[str]               # 与 steps 等长或为全局预期（按模板，Q1 未定前 v1 等长）
+    expected: list[str]               # v1 不单独渲染；每步预期以 steps[].expect 为准（Q1 定稿）
     test_data: str | None = None
     trace_refs: TraceRefs
 
@@ -381,13 +393,77 @@ class ClosedLoop(BaseModel):            # §8.6 输出
 
 DB 行类型（`store/models.py` 内）与上述领域类型分离：`TaskRow/ArtifactRow/CaseRow/TraceRow/SnapshotRow/EventRow` 为接近表结构的 dataclass（JSON 字段保持原始字符串），DAO 负责 `Row ↔ Pydantic` 转换；业务层只收 Pydantic 对象，不接触 Row 与 JSON 字符串。
 
+### 2.10 Plan-Execute 控制面（AgentPlan / 评审 / 人决策）
+
+生产主图以 Plan 为编排主键；阶段产物（LinkPlan/PointPlan/…）仍作 capability 输出与 `artifacts` 载荷。权威定义见 `server/tester_agent/domain.py`。
+
+```python
+class PlanStepKind(StrEnum):
+    INTAKE_PARSE = "intake_parse"
+    COVERAGE_DESIGN = "coverage_design"   # 映射原 CP1 / link_identify
+    POINT_DESIGN = "point_design"         # 映射原 CP2 / point_write
+    CASE_GENERATE = "case_generate"
+    REVIEW_COVERAGE = "review_coverage"
+    REVIEW_QUALITY = "review_quality"
+    REVIEW_ADOPTION = "review_adoption"
+    REPAIR = "repair"
+    AWAIT_HUMAN = "await_human"
+
+class PlanStep(BaseModel):
+    step_id: str
+    kind: PlanStepKind
+    goal: str
+    input_refs: list[str] = []
+    output_ref: str | None = None          # artifact_id
+    status: Literal["pending","running","done","failed","skipped"] = "pending"
+    requires_confirm: bool = False
+    max_reflect: int = 2
+
+class AgentPlan(BaseModel):
+    plan_id: str
+    version: int
+    goal: str
+    steps: list[PlanStep]
+    status: Literal["draft","active","completed","failed"] = "active"
+    replan_count: int = 0
+
+class SubtaskResult(BaseModel):
+    subtask_id: str
+    kind: str
+    thread_id: str                         # `{parent}::sub::{subtask_id}`
+    status: Literal["running","done","failed","cancelled"]
+    summary: str = ""
+    output_ref: str | None = None
+
+class ReviewProposalItem(BaseModel):
+    target_id: str
+    action: Literal["adopt","edit_adopt","reject","add_point","add_case","repair"]
+    rationale: str
+    confidence: float = 0.5
+    patch: dict | None = None
+
+class ReviewProposal(BaseModel):
+    scope: str                             # coverage | quality | adoption | ...
+    items: list[ReviewProposalItem]
+    matrix_ref: str | None = None
+    degraded: bool = False
+
+class HumanDecision(BaseModel):
+    gate_kind: Literal["plan_confirm", "review_decision"]
+    action: Literal["confirm", "modify", "reject_rerun"]
+    artifact_id: str
+    payload: dict | None = None            # modify 时为修订后产物 / ReviewProposal
+```
+
+持久化：`AgentPlan` 落 `stage_artifact`（`kind=agent_plan`，`task.current_plan_artifact_id` 指向 active）；评审提案 `kind=review_proposal`；子任务行见 §3.1.1。控制 state 另持 `artifacts` / `plan_cursor` / `human_gates` / `reflection_log`（§7.1）。
+
 ---
 
 ## 3. 数据库详细设计
 
-### 3.1 DDL（SQLite，最新 schema_version = 2）
+### 3.1 DDL（SQLite，最新 schema_version = 4）
 
-> 001 为首版 15 表；002（2026-09-26 用户裁决）为 testcase 增 `created_at`（用例列表分页游标时间列，编辑/评审不再改变翻页位置）。下列 DDL 为 001+002 应用后的当前形态；历史迁移文件只增不改（§3.2）。
+> 001 为首版 15 表；002（2026-09-26）testcase 增 `created_at`；003 增 `batch_id`；**004（Plan-Execute）** 增 `task.current_plan_artifact_id`、`stage_artifact.kind`、`subtask` 表。下列 DDL 以 001+002 主体为主；004 增量见 §3.1.1。历史迁移文件只增不改（§3.2）。
 
 两个库文件，均在 data 根下：
 
@@ -602,6 +678,27 @@ CREATE TABLE config (
 INSERT OR IGNORE INTO config (id, model_config, runtime_config) VALUES (1, '{}', '{}');
 ```
 
+### 3.1.1 迁移 004（Plan-Execute）
+
+```sql
+-- server/store/migrations/004_plan_execute.sql
+ALTER TABLE task ADD COLUMN current_plan_artifact_id TEXT;
+ALTER TABLE stage_artifact ADD COLUMN kind TEXT;   -- 缺省回填为 stage；agent_plan/review_proposal/...
+CREATE TABLE IF NOT EXISTS subtask (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  result_artifact_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_subtask_task ON subtask(task_id, created_at);
+```
+
+约定：`stage_artifact.kind` 与 `stage` 可并存——遗留阶段产物 `kind≈stage`；控制面产物用语义 kind（`agent_plan` / `coverage_design` / `point_plan` / `case_set` / `review_proposal`）。同一 run 内 `(task_id, stage|kind, stage_version)` 仍靠既有唯一索引与 DAO 写入路径保证。
+
 ### 3.2 迁移机制
 
 - `server/store/migrations/001_init.sql` 保存上述 DDL；启动时读 `schema_meta`，缺失或版本低则按文件名顺序执行迁移并在同一事务写版本号。
@@ -696,7 +793,7 @@ data/
 - 所有写入路径必须经 `workspace_files.py` 拼出（禁止业务代码自己 join），路径越界检查（resolve 后必须仍在对应 task 目录下）。
 - slug：标题 → NFKC → 小写 → 非字母数字转 `-` → 折叠连字符 → 截断 40 字符；**slug 冲突时追加 `-2/-3`，不靠 slug 保证唯一性**（唯一性由 case_id 前缀保证）。
 
-### 4.2 用例 Markdown 格式（v1 模板，Q1 定稿前的工作版本）
+### 4.2 用例 Markdown 格式（v1 模板，**Q1 一期定稿**）
 
 ```markdown
 ---
@@ -979,15 +1076,18 @@ FastAPI lifespan 启动顺序（任一步失败阻断启动并明确报错）：
 
 ## 7. LangGraph 图详细设计
 
+> **生产路径 = 控制环**（`graph/control/` + `tools/capabilities.invoke_capability`）。  
+> 阶段节点函数是能力实现真相源，不再作为 StateGraph 拓扑节点。完整行为见 plan-execute-reflexion 设计文档。
+
 ### 7.1 State 定义与图装配
 
 ```python
-# server/graph/state.py
-class TaskState(TypedDict):
+# server/graph/state.py — 控制面字段 + 阶段产物镜像（能力写入后仍可读）
+class TaskState(TypedDict, total=False):
     task_id: str
     graph_run_id: str
     workspace_id: str
-    clauses: list[dict]                    # ClauseRef
+    clauses: list[dict]
     link_plan: dict | None
     point_plan: dict | None
     case_batch: dict | None
@@ -995,47 +1095,51 @@ class TaskState(TypedDict):
     clarification_questions: list[dict]
     current_stage_version: dict[str, int]
     batch_cursor: dict[str, dict]
+    # ---- Plan-Execute ----
+    agent_plan: dict
+    plan_cursor: str | None
+    artifacts: dict                  # artifact_id → {kind, version, payload, confirmed_by}
+    subtask: dict | None
+    reflection_log: list[dict]
+    human_gates: dict                # {link, point, review} bool
+    reflect_counts: dict
+    _reflect_decision: str
 
-# server/graph/main_graph.py
-def build_graph(ctx_deps) -> CompiledGraph:
+# 生产：GraphRegistry.create_production → build_control_graph / build_graph
+def build_control_graph(checkpointer=None, *, caps=None) -> CompiledStateGraph:
     g = StateGraph(TaskState)
-    g.add_node(STAGE_INTAKE,         wrap(intake_node))
-    g.add_node(STAGE_LINK_IDENTIFY,  wrap(link_identify_node))
-    g.add_node("cp1_gate",           gate_node(CHECKPOINT_1))     # 纯透传，仅作中断锚点
-    g.add_node(STAGE_POINT_WRITE,    wrap(point_write_node))
-    g.add_node("cp2_gate",           gate_node(CHECKPOINT_2))
-    g.add_node(STAGE_CASE_GENERATE,  wrap(case_generate_node))
-    g.add_node(STAGE_COVERAGE_CHECK, wrap(coverage_check_node))
-
-    g.add_edge(START, STAGE_INTAKE)
-    g.add_edge(STAGE_INTAKE, STAGE_LINK_IDENTIFY)
-    g.add_edge(STAGE_LINK_IDENTIFY, "cp1_gate")
-    g.add_edge("cp1_gate", STAGE_POINT_WRITE)
-    g.add_edge(STAGE_POINT_WRITE, "cp2_gate")
-    g.add_edge("cp2_gate", STAGE_CASE_GENERATE)
-    g.add_edge(STAGE_CASE_GENERATE, STAGE_COVERAGE_CHECK)
-    g.add_edge(STAGE_COVERAGE_CHECK, END)
-
-    checkpointer = SqliteSaver.from_conn_string(ctx_deps.checkpoint_db_path)
-    return g.compile(
-        checkpointer=checkpointer,
-        interrupt_before=["cp1_gate", "cp2_gate"],
-    )
+    g.add_node("plan", plan_node)
+    g.add_node("dispatch", dispatch_node)
+    g.add_node("execute_step", execute_step_node)   # async；config.configurable.ctx；caps 可覆盖能力
+    g.add_node("await_human", await_human_node)     # interrupt() when gate
+    g.add_node("reflect", reflect_node)
+    g.add_edge(START, "plan")
+    g.add_edge("plan", "dispatch")
+    g.add_conditional_edges("dispatch", route_after_dispatch,
+                            {"execute": "execute_step", "end": END})
+    g.add_edge("execute_step", "await_human")
+    g.add_edge("await_human", "reflect")
+    g.add_conditional_edges("reflect", route_after_reflect,
+                            {"dispatch": "dispatch", "plan": "plan",
+                             "execute": "execute_step", "end": END})
+    return g.compile(checkpointer=checkpointer)
 ```
 
-- `wrap()`：统一注入 TaskContext（RunnableConfig 透传）、节点计时、异常→错误码映射、`node_start/node_end` 事件发射与 cancel 检查。
-- `gate_node`：无 IO，只把上一节点产物标记为待确认；CP 的用户放行不经过图节点逻辑——confirm API 直接写 artifact（§7.6），resume 后 gate 透传。
-- waiting_input 不使用 interrupt_before，而用 `interrupt()` 函数（LangGraph 函数式中断）在任意节点内挂起，payload 携带 questions；answer API 以 `Command(resume=answers)` 恢复（S2 验证点，若版本不支持则退化为"节点结束前写 questions + API 在节点外循环重入"的应用层方案）。
+- `execute_step`：非 `review_*` 步调用 `invoke_capability(kind, ctx, state)` → 真实节点函数；`review_*` 构建 `ReviewProposal` artifact。无 ctx 时 stub（单测）。
+- `await_human`：`requires_confirm` 且对应 `human_gates` 开启且未 `confirmed_by=user` 时 `interrupt({gate_kind, artifact_id, step_id, kind})`；resume 后同步 `link_plan`/`point_plan`（`legacy_state_from_artifact`）。
+- `human_gates` 默认 `{link:true, point:true, review:true}`；全关可跑通 stub 闭环（场景测）。
+- waiting_input 仍用节点内 `interrupt()`（intake/link_identify 澄清）；answer API `Command(resume=answers)`（§7.6）。
 
-### 7.2 节点契约总表
+### 7.2 节点契约总表（能力函数；由控制环 `execute_step` / 遗留图 `wrap` 调用）
 
-| 节点 | 输入（state/文件） | LLM 调用 | 检索 | 产物与落库 | 中断 |
+| 节点 / PlanStep.kind | 输入（state/文件） | LLM 调用 | 检索 | 产物与落库 | 中断 |
 |---|---|---|---|---|---|
-| intake | requirement.md | 歧义检测 1 次（可关） | 否 | task.clauses + clause 缓存文件；不产 artifact | interrupt() 提问 |
-| link_identify | clauses + 索引树 | 1 次（结构化） | 子图 index_line 档 | stage_artifact(link_identify, v1, LinkPlan) | interrupt() 提问；cp1_gate |
-| point_write | 已确认 LinkPlan、按故事分批读条款 | 每批 1 次 | 每批子图 passage 档 | artifact(point_write, v1, PointPlan) + progress | cp2_gate |
-| case_generate | PointPlan、按测试点分批 | 每批 N 次生成 | 每批子图 passage 档 | artifact(case_generate, v1) + MD 文件 + testcase 行 + trace/snapshot | 否 |
-| coverage_check | clauses + PointPlan + testcase 集合 | 最多 2 轮补充生成（复用 case_generate 单批函数） | 随补充批次 | artifact(coverage_check, CoverageMatrix) | 否 |
+| intake / `intake_parse` | requirement.md | 歧义检测 1 次（可关） | 否 | task.clauses；artifacts.kind=`clauses` | interrupt() 提问 |
+| link_identify / `coverage_design` | clauses + 索引树 | 1 次（结构化） | 子图 index_line 档 | stage_artifact(link_identify) + artifacts | interrupt()；人门 `plan_confirm` |
+| point_write / `point_design` | 已确认 LinkPlan、按故事分批 | 每批 1 次 | 每批子图 passage 档 | artifact(point_write) + progress | 人门 `plan_confirm` |
+| case_generate / `case_generate` | PointPlan、按测试点分批 | 每批 N 次生成 | 每批子图 passage 档 | MD + testcase + trace/snapshot | 否 |
+| coverage_check（工具/矩阵） | clauses + PointPlan + cases | 补充生成有上限（遗留图） | 随补充批次 | CoverageMatrix；PE 下改由 review_coverage 提案驱动补例 | 否 |
+| review_* | 上游 artifacts / cases | 子任务或 stub builder | 只读工具为主 | ReviewProposal artifact；人门 `review_decision` | interrupt() |
 
 每个节点统一出口返回**状态增量 dict**（LangGraph reducer：plan 类字段整体替换；batch_cursor 按 node key merge）；节点不直接改 state 其他字段。
 
@@ -1170,13 +1274,14 @@ point_id 由 API 侧确定性赋值（`pt-{story 在 LinkPlan 中的序号}-{批
 
 | 入口 | API 层动作 | 图恢复方式 |
 |---|---|---|
-| confirm(action=confirm) | 校验 artifact 为当前 active；confirmed_by=user；origin 保持 system | `graph.ainvoke(None, config=thread)` 越过 gate |
-| confirm(action=modify) | 同校验；payload 经修订契约校验（§2.3）；旧版本 superseded，新版本 v+1、origin=user_revised、confirmed_by=user；写 message(checkpoint_revision)；state 用新 payload 更新后 resume | `update_state` 写新 plan 再 invoke(None) |
-| answer | 写 message(clarification_qa)，回填 questions.answer | `Command(resume=answers)` |
-| rollback | §11.2 协议；新 run、新 thread、入口 state 注入修订产物 | 新 thread 首 invoke（从目标阶段入口函数起跑，见下注） |
-| regenerate | 获取任务锁→状态置 running→直接调 `case_generate` 的 worker（batch_id=`regen-{ts}`，stage_version=当前 v）→新行 lineage 挂旧 case→回 completed 并发 task_done | 不 invoke 图 |
+| confirm（遗留：`stage`∈{link_identify,point_write} + `expected_version`） | 校验 active；confirm→`confirmed_by=user`；modify→supersede+v+1 user_revised + message(checkpoint_revision) + `aupdate_state` 写 plan 字段 | Runner.start；越过静态 gate |
+| confirm（PE：`gate_kind` 缺省 `plan_confirm`） | `HumanDecision` → `apply_human_decision`；落确认、可选改写 plan artifact；`aupdate_state` 同步 `artifacts` + 遗留 `link_plan`/`point_plan` | Runner.start(resume=决策 payload) 越过 `await_human` interrupt |
+| confirm（`gate_kind=review_decision`） | 同 PE；adoption 写 case review_status；coverage/quality 可插入 repair/case_generate steps；`reject_rerun` 将评审步置 pending | 同上 |
+| answer | 写 message(clarification_qa) | `Command(resume=answers)` |
+| rollback | §11.2；新 run、新 thread | 遗留：`run_from_stage` / 派生 thread；PE：入口为修订 AgentPlan + 继承 artifacts（后续完善） |
+| regenerate | 调 case_generate worker（batch_id=`regen-*`） | 不 invoke 主图 |
 
-> 回退入口：主图节点函数设计为可按"入口阶段"调用的普通函数（无 LangGraph 依赖），`main_graph.py` 之外提供 `run_from_stage(ctx, stage)` 轻量编排器（顺序调用入口及下游节点函数，检查点仍落 checkpointer 但不依赖旧图状态）。S2 若验证派生 thread resume 可行，则优先用图本身；否则用该编排器，两种方式写同一套产物，接口预留于 `graph/runner.py`。
+> `gate_kind` 可省略，服务端默认 `plan_confirm`，兼容旧客户端（e2e / StageConfirmPage）。
 
 ---
 
@@ -1402,7 +1507,7 @@ class ExportService:
            后台 asyncio task + 结果落 task_event/临时目录，句柄轮询 GET /tasks/{id}/export）。"""
 ```
 
-zip 结构：`{任务标题slug}/v{当前active版本}/{point序号}-{case标题slug}.md` + 根目录 `INDEX.md`（用例清单表：序号/标题/优先级/评审状态/溯源条款）。Excel 汇总接口预留（Q2）。
+zip 结构（**Q2 一期定稿**）：根目录 `INDEX.md`（序号/标题/优先级/评审状态/溯源条款）+ `v{stage_version}/{point_id}-{case标题slug}.md`（同 point 重名追加 `-2/-3`）。Excel 汇总与用例管理系统对接 → 二期预留。
 
 ---
 
@@ -1465,6 +1570,12 @@ class SendMessageIn(BaseModel):
     kind: Literal["chat", "change_request"] = "chat"
     context: dict | None = None    # change_request 时可携带目标 stage 提示
 class MessageOut(BaseModel): ...   # 对齐 message 表字段 + author 展示名
+class SendMessageOut(BaseModel):
+    user: MessageOut
+    assistant: MessageOut | None = None  # kind=chat 时跑 tool_agent；含 payload.tool_trace
+# chat：落 user → tool_agent_graph → 落 assistant；change_request：仅落 user。
+# 工具实现见 tools/（sandbox、bash_persistent、str_replace_editor、registry）与
+# graph/tool_agent.py / tool_gather.py；产线默认 enable_tools_stages=[]。
 
 # ---- task ----
 class CreateTaskIn(BaseModel):
@@ -1491,13 +1602,20 @@ class RollbackOut(BaseModel):
 
 # ---- confirm / answer / cancel ----
 class ConfirmIn(BaseModel):
-    stage: Literal["link_identify", "point_write"]
+    gate_kind: Literal["plan_confirm", "review_decision"] = "plan_confirm"
     artifact_id: str
-    expected_version: int
-    action: Literal["confirm", "modify"]
-    payload: dict | None = None
+    action: Literal["confirm", "modify", "reject_rerun"] = "confirm"
+    # 遗留路径：stage + expected_version 同时给出时走五阶段 confirm
+    expected_version: int | None = None
+    stage: str | None = None               # link_identify | point_write | …
+    payload: dict | None = None            # modify 修订体 / ReviewProposal
 class AnswerIn(BaseModel):
     answers: list[dict]                        # [{question_id, answer}]
+
+# ---- plan / subtasks / review ----
+# GET /tasks/{id}/plan → AgentPlan（或 404）
+# GET /tasks/{id}/subtasks → list[SubtaskOut]
+# GET /tasks/{id}/review-proposals/{artifact_id} → ReviewProposal
 
 # ---- case ----
 class CaseUpdateIn(BaseModel):
@@ -1577,6 +1695,16 @@ EVENT_SCHEMAS = {
  "budget_warning":     {"node": str, "tokens_est": int, "budget": int},
  "llm_token":          {"node": str, "batch_id": str|None, "chunk": str},
  "checkpoint_waiting": {"stage": str, "artifact_id": str, "stage_version": int},
+ "human_gate_waiting": {"stage": str, "artifact_id": str, "stage_version": int,
+                        "gate_kind": "plan_confirm"|"review_decision",
+                        "step_id": str|None},
+ "plan_updated":       {"plan_id": str, "version": int, "status": str},
+ "step_started":       {"step_id": str, "kind": str},
+ "step_finished":      {"step_id": str, "kind": str, "output_ref": str|None},
+ "subtask_started":    {"subtask_id": str, "kind": str},
+ "subtask_finished":   {"subtask_id": str, "status": str, "output_ref": str|None},
+ "reflection_result":  {"step_id": str, "decision": "pass"|"repair"|"replan"},
+ "review_proposal_ready": {"artifact_id": str, "scope": str},
  "clarification_needed": {"questions": list},
  "case_generated":     {"case_id": str, "title": str, "file_path": str, "batch_id": str},
  "coverage_ready":     {"matrix_summary": dict, "warnings": list},
@@ -1666,8 +1794,7 @@ async def rollback(ctx, task_id, body: RollbackIn) -> ImpactAnalysis:
         await ctx.daos.message.put(SystemRollbackMessage(task_id, impact))  # 留痕
 
     # 事务提交后：初始化新 run 的入口 state（文件/DB 已一致）
-    await ctx.app.graphs.start_run_from_stage(new_thread, stage=target.stage,
-                                              entry_plan=entry_plan)
+    await ctx.app.graphs.start_run_from_plan(new_thread, entry_state=entry_state)
     await ctx.bus.emit(task_id, "node_start", {"node": target.stage})
     return impact
 ```
@@ -1729,44 +1856,46 @@ React 18 + Vite + TypeScript + TanStack Query（服务端状态）+ Zustand（�
 web/src/
 ├── api/
 │   ├── client.ts          # fetch 封装：错误信封解包、游标分页、Idempotency-Key 注入
-│   ├── sse.ts             # EventSource 封装：Last-Event-ID 持久化、重连退避、未知事件忽略
-│   └── endpoints.ts       # 全部端点的类型化函数（类型由 openapi 生成或手写镜像 §10）
+│   ├── sse.ts             # EventSource：Last-Event-ID、重连退避、未知事件忽略
+│   ├── domain.ts          # 含 GateKind / ReviewProposal / CheckpointWaiting
+│   └── endpoints.ts       # 类型化端点（含 confirmTask.gate_kind、getReviewProposal）
 ├── stores/
-│   ├── taskStream.ts      # 当前任务事件流 → 节点/批次/预算状态
-│   └── session.ts         # 当前工作区/会话/任务选择
+│   ├── taskStream.ts      # SSE → phase/checkpoint/clarification；归一 human_gate_waiting
+│   └── session.ts
 ├── pages/
-│   ├── ChatPage.tsx            # 会话（需求发起、澄清问答、change_request）
-│   ├── StageConfirmPage.tsx    # CP1/CP2
-│   ├── WorkbenchPage.tsx       # 用例工作台
+│   ├── SessionPage.tsx         # 会话优先壳（现 re-export ChatPage）
+│   ├── ChatPage.tsx            # 需求发起、澄清、内联门禁/评审卡、change_request
+│   ├── StageConfirmPage.tsx    # 完整 CP 编辑（可选；会话内 GateConfirm 为主）
+│   ├── WorkbenchPage.tsx
 │   ├── RetrievalDebugPage.tsx
 │   ├── WorkspacesPage.tsx
-│   └── SettingsPage.tsx        # 模型配置
+│   └── SettingsPage.tsx
 ├── components/
+│   ├── session/（GateConfirmCard、ReviewProposalCard）
 │   ├── chat/（MessageList、RequirementInput、ClarificationCard）
 │   ├── confirm/（LinkPlanEditor、PointPlanEditor、ImpactPreview）
-│   ├── case/（CaseList、MdViewer、MdEditor、ReviewBar、CoverageMatrixView、LineageBadge）
-│   ├── debug/（FunnelChart、TraceTree、SnapshotList、SnapshotItemDialog、Playground）
-│   └── common/（ErrorBanner、Pagination、StaleBanner、BudgetWarningBar）
-└── main.tsx / router.tsx
+│   ├── case/（CaseList、MdViewer、MdEditor、ReviewBar、…）
+│   ├── debug/（…）
+│   └── common/（ErrorBanner、ReconnectBanner、…）
+└── main.tsx / router.tsx      # 主路由 `/` → SessionPage
 ```
 
 ### 12.2 流式状态管理（taskStream store）
 
-- 打开任务即建一条 SSE，localStorage 存 `{taskId: lastEventId}`；事件按 §10.4 schema 归一化到 store：`phase`（节点/检查点）、`batches{node: {done,total,current}}`、`budgetWarnings[]`、`cases[]`（case_generated 增量）。
-- 收到 `checkpoint_waiting/clarification_needed`：路由提示切到确认页/弹澄清卡（不强制跳转，用户可停留看调试面板）。
-- 收到 `task_error`：ErrorBanner 展示 message + code；`retryable=true` 显示"重试"按钮（调 /run）；409/VERSION_CONFLICT 类通过 REST 响应处理，不经 SSE。
-- EventSource 是浏览器原生能力（不支持自定义头）：`Last-Event-ID` 浏览器会自动带；为稳妥同时在 URL 兜底 `?after_event_id=`。重连退避 1s/2s/5s 封顶 30s。
-- TanStack Query 的列表数据与流式增量的关系：SSE 只驱动"进行态" UI；`case_generated` 事件仅乐观插入，真正的列表以 `GET /cases` 为准（事件后做一次 invalidate，不把事件当数据源）。
+- 打开任务即建 SSE；`checkpoint_waiting` / `human_gate_waiting` 写入 `checkpoint`（含可选 `gate_kind`/`step_id`）。
+- `gate_kind=review_decision` → Session 渲染 `ReviewProposalCard`（拉 `GET .../review-proposals/{id}`，可改条目 action 后 modify/confirm/reject_rerun）；否则 `GateConfirmCard`（plan_confirm）。
+- `clarification_needed` → 内联 ClarificationCard，不强制跳转。
+- 其余：`batch_progress` / `budget_warning` / `task_error` / `task_done` 同前。
 
 ### 12.3 关键页面交互要点
 
 | 页面 | 要点 |
 |---|---|
-| ChatPage | 需求用大文本框/拖拽 .md；提交后自动建 task→run→订阅；澄清问题以卡片内联回答；change_request 输入"@阶段"建议回退目标，发送后前端弹 ImpactPreview 二次确认再真正调 rollback |
-| StageConfirmPage | 左清单右详情；hit/new 分色，confidence 低置灰；LinkPlan 编辑控件只开放 §2.3 修改契约的字段；放行条 payload 带 expected_version，冲突时整体刷新并提示他人/他页改动（一期单用户，主要是多标签页） |
-| WorkbenchPage | 三栏：列表（评审状态过滤+版本切换）/ MD 渲染 / 编辑抽屉；保存带 If-Match；file_missing/hash_conflict 用例顶部红条并提供两个消解按钮；批量评审后即时刷新采纳率摘要（仅 active） |
-| RetrievalDebugPage | 顶部阶段 tab + 批次选择；漏斗图（召回→过滤→重排→注入，点开看每路 candidates 及 drop_reason）；快照列表点开 item 弹窗按偏移拉全文；Playground 侧栏输入 query 实时试跑 |
-| SettingsPage | 模型配置保存后"测试连接"按钮调 /config/model/test；工作区表单同样有 kb/test，能力位以勾选只读展示（metadata_filter 等，不可手改） |
+| SessionPage / ChatPage | 需求框建 task→run→订阅；澄清内联；**门禁/评审卡内联在状态区**；change_request `@阶段` → ImpactPreview → rollback；完整确认页链接仅作可选 |
+| StageConfirmPage | 遗留 CP1/CP2 大编辑面；confirm 带 `gate_kind=plan_confirm` + expected_version |
+| WorkbenchPage | 三栏列表/渲染/编辑；If-Match；file_missing/hash_conflict 消解；采纳率仅 active |
+| RetrievalDebugPage | 阶段 tab + 漏斗 + 快照 + Playground |
+| SettingsPage | 模型/KB 探活；能力位只读勾选 |
 
 ### 12.4 前端容错总则
 
@@ -2049,7 +2178,7 @@ case_generate b0(done) b1(started: MD已rename、DB事务未提交) ✗ 进程�
     v1→superseded；put v2(user_revised)；point_write/case_generate 的 active 行
       graph_run_id 改挂新 run、status 保持 active（评审状态原样）
     task 切新 run/派生 thread
-  COMMIT → start_run_from_stage(link_identify, entry_plan=v2)
+  COMMIT → start_run_from_plan(entry_state with AgentPlan)
   link_identify 重跑；point_write 因全部 unaffected：
     执行器读 active PointPlan 直接继承（不重调 LLM），仅当存在 added story 时对新增单元跑批次
   case_generate 同理只补 affected/新增点；UI 可见绝大多数既有评审成果保留
@@ -2114,10 +2243,10 @@ exec uvicorn tester_agent.main:app --host 127.0.0.1 --port 8080 --workers 1
 3. 内置 agent 不存在则插入：id 固定 `builtin-case-designer`，agent_type=`case_designer`，builtin=1，config 用 §13.2 种子；
 4. 不创建默认工作区（知识库配置必须用户显式填写，符合 PRD US7.1）。
 
-### 19.5 数据备份（一期最简）
+### 19.5 数据备份（一期最简，WP-X2 已接线）
 
 - 全部状态在 data/ 目录；备份 = 冷拷贝目录（建议先停服务，或使用 sqlite `.backup` 命令对两个 db 做热备份后连同 workspaces/ 打包）；
-- cli 增加 `backup <out_dir>`：对 app.db/checkpoints.db 执行 SQLite 在线备份（backup API）再连同 workspaces/ 复制；README 说明用法，不做自动调度。
+- `python -m tester_agent.cli backup <out_dir>`：对 app.db/checkpoints.db 执行 SQLite 在线备份（backup API）再连同 workspaces/ 复制；checkpoints.db / workspaces 缺失可跳过，app.db 缺失返回非 0；不做自动调度（见根 README）。
 
 ---
 
@@ -2224,12 +2353,12 @@ node: link_identify
 | S1 | ReMe SDK 三能力探测结论（metadata_filter / entry_version / passage），决定 §8.4 是否走镜像方案 | C1 之前 |
 | S2 | interrupt()+Command(resume) 与派生 thread 在当前 langgraph 版本的验证；不通过则启用 run_from_stage 编排器 | C3 之前 |
 | DeepSeek 账号 | base_url/model 名、流式 usage 返回确认、JSON mode 支持确认 | C1 |
-| Q1 用例模板 | 本文 §4.2 v1 模板的业务评审（字段/步骤预期形态/优先级口径） | C3 之前 |
+| Q1 用例模板 | **closed（WP-X2）**：§4.2 v1 即为一期定稿 | C3 / C6 |
 | 目录初始化 | TESTER_AGENT_DATA_DIR 落点、127.0.0.1 绑定确认 | C0 |
 
 ### 21.2 可并行、不阻塞编码项
 
-S3 需求体量实测、S4 索引体量、S5 成本标定（C2 后用真实/仿真数据跑）、S6 写接口语义、S7 黄金集收集、Q8 合规结论、Q9 耗时上限。
+S3/S4/S5 真实环境标定（一期 deferred/partial，见 tech-design §8）、Q8 合规结论、Q9 耗时上限；S6/S7 已按预案关闭。
 
 ### 21.3 文档索引与维护约定
 

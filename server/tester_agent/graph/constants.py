@@ -15,18 +15,11 @@ STAGE_POINT_WRITE = "point_write"
 STAGE_CASE_GENERATE = "case_generate"
 STAGE_COVERAGE_CHECK = "coverage_check"
 STAGE_REVIEW_EXPORT = "review_export"
-CHECKPOINT_1, CHECKPOINT_2 = "checkpoint1", "checkpoint2"
 
 BATCH_DEFAULT_SIZE = 5
 HEARTBEAT_INTERVAL_SEC = 10
 HEARTBEAT_STALE_SEC    = 120
 SUSPEND_STALE_DAYS     = 7
-
-# ---------- gate 节点名（dd §7.1 图中字面量；静态 interrupt_before 锚点） ----------
-# 与 CHECKPOINT_1/2（落库的检查点标识）区分：gate 是图内透传节点，
-# CHECKPOINT_x 是该 gate 代表的人工确认检查点编号。
-GATE_CP1 = "cp1_gate"
-GATE_CP2 = "cp2_gate"
 
 # ---------- dd §8.1 检索阶段配置初值（S5 标定后固化） ----------
 

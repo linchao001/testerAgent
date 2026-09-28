@@ -1,13 +1,16 @@
-"""Control-loop node implementations (stub capabilities until Task 5)."""
+"""Control-loop node implementations (capability dispatch + human gates)."""
 
-from __future__ import annotations
+# 注意：不能加 ``from __future__ import annotations`` —— LangGraph 要求
+# config 参数注解为 RunnableConfig 本体（与 wrap.py 同理）。
 
 import uuid
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from ...domain import AgentPlan, PlanStep, PlanStepKind
+from ...tools.capabilities import invoke_capability, legacy_state_from_artifact
 from .gates import gate_enabled
 from .reflect import decide_reflection
 
@@ -114,9 +117,20 @@ def route_after_dispatch(state: dict) -> str:
     return "execute"
 
 
-def execute_step_node(state: dict) -> dict[str, Any]:
-    """Execute current step via capability dispatch or review builders."""
-    from ...tools.capabilities import dispatch_capability
+def _ctx_from_config(config: RunnableConfig | None) -> Any | None:
+    if not config:
+        return None
+    configurable = config.get("configurable") or {}
+    return configurable.get("ctx")
+
+
+async def execute_step_node(
+    state: dict,
+    config: RunnableConfig | None = None,
+    *,
+    nodes: dict | None = None,
+) -> dict[str, Any]:
+    """Execute current step via real stage nodes (or stub without TaskContext)."""
     from ..subtasks.review_adoption import build_adoption_proposal
     from ..subtasks.review_coverage import build_coverage_proposal
     from ..subtasks.review_quality import build_quality_proposal
@@ -124,6 +138,11 @@ def execute_step_node(state: dict) -> dict[str, Any]:
     plan = AgentPlan.model_validate(state["agent_plan"])
     cursor = state.get("plan_cursor")
     artifacts = dict(state.get("artifacts") or {})
+    ctx = _ctx_from_config(config)
+    out: dict[str, Any] = {
+        "agent_plan": plan.model_dump(),
+        "artifacts": artifacts,
+    }
     for step in plan.steps:
         if step.step_id != cursor:
             continue
@@ -169,23 +188,24 @@ def execute_step_node(state: dict) -> dict[str, Any]:
             step.output_ref = art_id
             step.status = "done"
         else:
-            art_id = step.output_ref or dispatch_capability(step.kind)
-            artifacts.setdefault(
-                art_id,
-                {
-                    "kind": step.kind.value,
-                    "version": 1,
-                    "payload_ref": art_id,
-                    "confirmed_by": None,
-                },
+            outcome = await invoke_capability(
+                step.kind, ctx=ctx, state=state, nodes=nodes
             )
+            art_id = step.output_ref or outcome.artifact_id
+            artifacts[art_id] = {
+                "kind": outcome.artifact_kind,
+                "version": outcome.version,
+                "payload_ref": art_id,
+                "confirmed_by": None,
+                "payload": outcome.payload,
+            }
             step.output_ref = art_id
             step.status = "done"
+            out.update(outcome.increment)
         break
-    return {
-        "agent_plan": plan.model_dump(),
-        "artifacts": artifacts,
-    }
+    out["agent_plan"] = plan.model_dump()
+    out["artifacts"] = artifacts
+    return out
 
 
 def await_human_node(state: dict) -> dict[str, Any]:
@@ -224,11 +244,13 @@ def await_human_node(state: dict) -> dict[str, Any]:
             art["version"] = int(art.get("version") or 1) + 1
         art["confirmed_by"] = "user"
         artifacts[art_id] = art
-        return {"artifacts": artifacts}
+        synced = legacy_state_from_artifact(step.kind, art.get("payload"))
+        return {"artifacts": artifacts, **synced}
     # Bare resume (ainvoke None after API marked confirm in state)
     art["confirmed_by"] = art.get("confirmed_by") or "user"
     artifacts[art_id] = art
-    return {"artifacts": artifacts}
+    synced = legacy_state_from_artifact(step.kind, art.get("payload"))
+    return {"artifacts": artifacts, **synced}
 
 
 def reflect_node(state: dict) -> dict[str, Any]:

@@ -13,12 +13,9 @@ from __future__ import annotations
 import sys
 import uuid
 from pathlib import Path
-from typing import TypedDict
-
 import aiosqlite
 import pytest
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.graph import END, START, StateGraph
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -486,55 +483,59 @@ async def test_rollback_atomicity_on_dao_error(rollback_ctx):
     assert link.stage_version == 1  # 无 v2
 
 
-# ---------- ⑥ start_run_from_stage 派生 thread ----------
-
-
-class _RBState(TypedDict, total=False):
-    log: list[str]
-    link_plan: dict
-    point_plan: dict
+# ---------- ⑥ start_run_from_plan 派生 thread ----------
 
 
 @pytest.mark.asyncio()
-async def test_start_run_from_stage_forks_and_targets_stage(tmp_path):
-    """回退派生 thread：as_node=前驱 → next=目标阶段，入口 state 已注入。"""
-    # 构造五节点线性图（镜像主图拓扑的简化版）
-    async def _intake(s): return {"log": s.get("log", []) + ["intake"]}
-    async def _link(s): return {"log": s.get("log", []) + ["link"]}
-    async def _point(s): return {"log": s.get("log", []) + ["point"]}
-    async def _case(s): return {"log": s.get("log", []) + ["case"]}
-    async def _cov(s): return {"log": s.get("log", []) + ["cov"]}
-
-    g = StateGraph(_RBState)
-    for name, fn in [("intake", _intake), ("link_identify", _link),
-                     ("point_write", _point), ("case_generate", _case),
-                     ("coverage_check", _cov)]:
-        g.add_node(name, fn)
-    g.add_edge(START, "intake")
-    g.add_edge("intake", "link_identify")
-    g.add_edge("link_identify", "point_write")
-    g.add_edge("point_write", "case_generate")
-    g.add_edge("case_generate", "coverage_check")
-    g.add_edge("coverage_check", END)
+async def test_start_run_from_plan_forks_to_dispatch(tmp_path):
+    """回退派生 thread：as_node=plan → next=dispatch，入口 state 已注入。"""
+    from tester_agent.domain import AgentPlan, PlanStep, PlanStepKind
+    from tester_agent.graph.control.graph import build_control_graph
 
     conn = await aiosqlite.connect(
         str(tmp_path / "ckpt.db"), check_same_thread=False
     )
     saver = AsyncSqliteSaver(conn)
     await saver.setup()
-    graph = g.compile(checkpointer=saver)
+    graph = build_control_graph(saver)
     registry = GraphRegistry.from_graph(CASE_DESIGNER, graph)
 
-    # 回退到 point_write：as_node=link_identify（前驱）
-    await registry.start_run_from_stage(
+    plan = AgentPlan(
+        plan_id="p-rb",
+        version=1,
+        goal="rollback",
+        steps=[
+            PlanStep(
+                step_id="s1",
+                kind=PlanStepKind.INTAKE_PARSE,
+                goal="done",
+                status="done",
+            ),
+            PlanStep(
+                step_id="s2",
+                kind=PlanStepKind.POINT_DESIGN,
+                goal="rerun",
+                status="pending",
+                requires_confirm=True,
+            ),
+        ],
+        status="active",
+    )
+    await registry.start_run_from_plan(
         "th-1::run1",
-        stage=STAGE_POINT_WRITE,
-        entry_state={"log": ["rollback-seed"], "link_plan": {"x": 1}},
+        entry_state={
+            "task_id": "t1",
+            "graph_run_id": "r2",
+            "workspace_id": "w1",
+            "agent_plan": plan.model_dump(),
+            "link_plan": {"x": 1},
+            "human_gates": {"link": True, "point": True, "review": False},
+        },
     )
     cfg = {"configurable": {"thread_id": "th-1::run1"}}
     state = await graph.aget_state(cfg)
-    assert state.next == ("point_write",)
-    assert state.values["log"] == ["rollback-seed"]
+    assert state.next == ("dispatch",)
     assert state.values["link_plan"] == {"x": 1}
+    assert state.values["agent_plan"]["steps"][1]["status"] == "pending"
 
     await conn.close()

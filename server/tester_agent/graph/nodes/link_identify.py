@@ -497,12 +497,18 @@ async def link_identify_node(ctx: "TaskContext", state: dict) -> dict[str, Any]:
         + "\n\n"
         + loader.load(_MAIN_PROMPT).content.strip()
     )
+    from ..tool_gather import append_tool_notes, gather_notes_for_ctx
+
     requirement_md = await ctx.files.read_requirement(task.workspace_id, task.id)
     user_content = render_user_message(
         clauses,
         requirement_md[:_REQ_SUMMARY_CHARS],
         render_knowledge_block(outcome.items, ctx.mirror),
     )
+    notes = await gather_notes_for_ctx(
+        ctx, "link_identify", "查看工作区需求与知识，辅助识别业务链路"
+    )
+    user_content = append_tool_notes(user_content, notes)
     messages: list[dict] = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_content},

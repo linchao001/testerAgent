@@ -695,8 +695,9 @@ class FileStore:
         freed = 0
         if not workspaces.is_dir():
             return CleanupReport(0, 0)
-        for task_dir in workspaces.rglob("*/tasks/*"):
-            exports = task_dir / "exports"
+        # 路径对齐 FileStore._task_dir：workspaces/{ws}/{task}/exports/
+        # （WP-X2 实测修正：旧实现误扫 */tasks/*，与真实落盘不一致）
+        for exports in workspaces.glob("*/*/exports"):
             if not exports.is_dir():
                 continue
             for job_dir in exports.iterdir():

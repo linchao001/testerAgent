@@ -362,7 +362,21 @@ class TestConversations:
             client.get("/api/v1/workspaces/no-such/conversations").status_code == 404
         )
 
-    def test_send_message_updates_detail_and_touch(self, env):
+    def test_send_message_updates_detail_and_touch(self, env, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from tester_agent.graph.tool_agent import ToolAgentResult
+
+        monkeypatch.setattr(
+            "tester_agent.runtime.chat_agent.get_chat_model",
+            lambda **_kwargs: object(),
+        )
+        monkeypatch.setattr(
+            "tester_agent.runtime.chat_agent.run_tool_agent",
+            AsyncMock(
+                return_value=ToolAgentResult(final_text="ok", tool_trace=[])
+            ),
+        )
         client, db, _ = env
         _seed_workspace(db)
         cid = client.post(
@@ -374,15 +388,21 @@ class TestConversations:
             json={"content": "帮我退款场景出用例", "kind": "chat"},
         )
         assert sent.status_code == 201
-        msg = sent.json()
+        body = sent.json()
+        msg = body["user"]
         assert msg["role"] == "user"
         assert msg["author"] == "用户"
         assert msg["kind"] == "chat"
+        assert body["assistant"]["role"] == "assistant"
+        assert body["assistant"]["content"] == "ok"
         detail = client.get(f"/api/v1/conversations/{cid}").json()
         assert detail["updated_at"] >= before["updated_at"]  # touch 生效
-        assert [m["id"] for m in detail["messages"]["items"]] == [msg["id"]]
+        assert [m["id"] for m in detail["messages"]["items"]] == [
+            body["assistant"]["id"],
+            msg["id"],
+        ]
         assert detail["tasks"] == []
-        # change_request + context 落 payload
+        # change_request + context 落 payload（无 tool loop）
         cr = client.post(
             f"/api/v1/conversations/{cid}/messages",
             json={
@@ -391,8 +411,9 @@ class TestConversations:
                 "context": {"stage": "link_identify"},
             },
         ).json()
-        assert cr["kind"] == "change_request"
-        assert cr["payload"] == {"stage": "link_identify"}
+        assert cr["assistant"] is None
+        assert cr["user"]["kind"] == "change_request"
+        assert cr["user"]["payload"] == {"stage": "link_identify"}
 
     def test_detail_contains_task_summary(self, env):
         client, db, _ = env
@@ -414,10 +435,12 @@ class TestConversations:
         cid = client.post(
             "/api/v1/conversations", json={"workspace_id": WS}
         ).json()["id"]
+        # change_request：无 assistant，便于断言纯用户消息分页
         ids = [
             client.post(
-                f"/api/v1/conversations/{cid}/messages", json={"content": f"m{i}"}
-            ).json()["id"]
+                f"/api/v1/conversations/{cid}/messages",
+                json={"content": f"m{i}", "kind": "change_request"},
+            ).json()["user"]["id"]
             for i in range(3)
         ]
         page1 = client.get(

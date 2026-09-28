@@ -269,11 +269,17 @@ async def _detect_ambiguity(ctx: "TaskContext", spans: list[ClauseSpan]) -> list
         {"clause_id": s.clause_id, "title_path": s.title_path, "anchor": s.anchor}
         for s in spans
     ]
+    from ..tool_gather import append_tool_notes, gather_notes_for_ctx
+
     user_content = (
         "<requirement_clauses>\n"
         + json.dumps(clause_index, ensure_ascii=False)
         + "\n</requirement_clauses>"
     )
+    notes = await gather_notes_for_ctx(
+        ctx, "intake", "查看需求条款并识别歧义所需上下文"
+    )
+    user_content = append_tool_notes(user_content, notes)
     result = await ctx.app.llm.chat(
         [
             {"role": "system", "content": tpl.content.strip()},

@@ -344,14 +344,25 @@ class TestRunnerInterrupts:
             )
             return {}
 
+        from tester_agent.tools.capabilities import caps_from_stage_nodes
+
         graph = build_graph(
             saver,
-            nodes={
-                STAGE_INTAKE: _marker_node(0),
-                STAGE_LINK_IDENTIFY: link_with_artifact,
-                STAGE_POINT_WRITE: _marker_node(2),
-            },
+            caps=caps_from_stage_nodes(
+                {
+                    STAGE_INTAKE: _marker_node(0),
+                    STAGE_LINK_IDENTIFY: link_with_artifact,
+                    STAGE_POINT_WRITE: _marker_node(2),
+                }
+            ),
         )
+        # 关闭评审门禁，停在 link 确认即可
+        from tester_agent.store.models import ConfigDAO
+
+        cfg = ConfigDAO(db)
+        rt = (await cfg.get()).runtime_dict()
+        rt["human_gate_review"] = False
+        await cfg.update_runtime(rt)
         _app, registry, runner = await _build_app(tmp_path, db, graph)
 
         await runner.start(TASK)
@@ -364,11 +375,11 @@ class TestRunnerInterrupts:
         rows = await _event_rows(db)
         cp = [r for r in rows if r.type == "checkpoint_waiting"]
         assert len(cp) == 1
-        assert cp[-1].payload_dict() == {
-            "stage": STAGE_LINK_IDENTIFY,
-            "artifact_id": "art-link",
-            "stage_version": 1,
-        }
+        payload = cp[-1].payload_dict()
+        assert payload["stage"] == STAGE_LINK_IDENTIFY
+        assert payload["artifact_id"] == "art-link"
+        assert payload["stage_version"] == 1
+        assert payload.get("gate_kind") == "plan_confirm"
 
     async def test_clarification_waiting_input(self, tmp_path, db, saver):
         await _seed(db)

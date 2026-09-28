@@ -1,17 +1,202 @@
-"""Capability tools wrapping legacy stage logic (stubs + dispatch helpers)."""
+"""Capability tools wrapping stage node functions for the control loop."""
 
 from __future__ import annotations
 
 import uuid
-from typing import Any, Callable
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Mapping
 
 from langchain_core.tools import StructuredTool
 
 from ..domain import PlanStepKind
 
+NodeFn = Callable[..., Awaitable[dict[str, Any]]]
+
+# PlanStep.kind → stage_artifact.stage / get_active lookup key
+KIND_TO_STAGE: dict[PlanStepKind, str] = {
+    PlanStepKind.COVERAGE_DESIGN: "link_identify",
+    PlanStepKind.POINT_DESIGN: "point_write",
+    PlanStepKind.CASE_GENERATE: "case_generate",
+    PlanStepKind.REPAIR: "case_generate",
+}
+
+STAGE_TO_KIND: dict[str, PlanStepKind] = {
+    "intake": PlanStepKind.INTAKE_PARSE,
+    "link_identify": PlanStepKind.COVERAGE_DESIGN,
+    "point_write": PlanStepKind.POINT_DESIGN,
+    "case_generate": PlanStepKind.CASE_GENERATE,
+}
+
+
+def caps_from_stage_nodes(nodes: Mapping[str, NodeFn]) -> dict[PlanStepKind, NodeFn]:
+    """Map stage-name node dict → PlanStepKind caps for control graph tests."""
+    out: dict[PlanStepKind, NodeFn] = {}
+    for stage, fn in nodes.items():
+        kind = STAGE_TO_KIND.get(stage)
+        if kind is not None:
+            out[kind] = fn
+    return out
+
+# Control-loop artifact.kind labels (spec §5.1)
+KIND_TO_ARTIFACT_KIND: dict[PlanStepKind, str] = {
+    PlanStepKind.INTAKE_PARSE: "clauses",
+    PlanStepKind.COVERAGE_DESIGN: "coverage_design",
+    PlanStepKind.POINT_DESIGN: "point_plan",
+    PlanStepKind.CASE_GENERATE: "case_set",
+    PlanStepKind.REPAIR: "case_set",
+}
+
+# State keys mirrored from confirmed artifact payloads
+KIND_TO_STATE_KEY: dict[PlanStepKind, str] = {
+    PlanStepKind.INTAKE_PARSE: "clauses",
+    PlanStepKind.COVERAGE_DESIGN: "link_plan",
+    PlanStepKind.POINT_DESIGN: "point_plan",
+    PlanStepKind.CASE_GENERATE: "case_batch",
+}
+
+
+@dataclass
+class CapabilityOutcome:
+    artifact_id: str
+    artifact_kind: str
+    increment: dict[str, Any] = field(default_factory=dict)
+    payload: Any = None
+    version: int = 1
+
 
 def _art_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
+
+
+def legacy_state_from_artifact(kind: PlanStepKind, payload: Any) -> dict[str, Any]:
+    """Map confirmed artifact payload back onto legacy TaskState fields."""
+    key = KIND_TO_STATE_KEY.get(kind)
+    if key is None or payload is None:
+        return {}
+    return {key: payload}
+
+
+def hydrate_state_from_artifacts(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Ensure link_plan / point_plan / clauses exist for downstream nodes."""
+    out = dict(state)
+    artifacts = out.get("artifacts") or {}
+    plan_raw = out.get("agent_plan")
+    if not plan_raw:
+        return out
+    from ..domain import AgentPlan
+
+    plan = AgentPlan.model_validate(plan_raw)
+    for step in plan.steps:
+        if step.status != "done" or not step.output_ref:
+            continue
+        art = artifacts.get(step.output_ref) or {}
+        payload = art.get("payload")
+        if payload is None:
+            continue
+        for k, v in legacy_state_from_artifact(step.kind, payload).items():
+            if out.get(k) is None:
+                out[k] = v
+    return out
+
+
+def default_nodes() -> dict[PlanStepKind, NodeFn]:
+    """Lazy import of production stage nodes (avoid circular imports at module load)."""
+    from ..graph.nodes.case_generate import case_generate_node
+    from ..graph.nodes.intake import intake_node
+    from ..graph.nodes.link_identify import link_identify_node
+    from ..graph.nodes.point_write import point_write_node
+
+    return {
+        PlanStepKind.INTAKE_PARSE: intake_node,
+        PlanStepKind.COVERAGE_DESIGN: link_identify_node,
+        PlanStepKind.POINT_DESIGN: point_write_node,
+        PlanStepKind.CASE_GENERATE: case_generate_node,
+        # repair reuses case_generate path until dedicated repair exists
+        PlanStepKind.REPAIR: case_generate_node,
+    }
+
+
+def _payload_from_increment(kind: PlanStepKind, increment: dict[str, Any]) -> Any:
+    if kind == PlanStepKind.INTAKE_PARSE:
+        return increment.get("clauses")
+    if kind == PlanStepKind.COVERAGE_DESIGN:
+        return increment.get("link_plan")
+    if kind == PlanStepKind.POINT_DESIGN:
+        return increment.get("point_plan")
+    if kind in (PlanStepKind.CASE_GENERATE, PlanStepKind.REPAIR):
+        return {
+            "case_count": increment.get("case_count"),
+            "case_ids": increment.get("case_ids") or [],
+        }
+    return increment
+
+
+async def _resolve_artifact_id(
+    kind: PlanStepKind,
+    ctx: Any,
+    increment: dict[str, Any],
+) -> tuple[str, int]:
+    """Prefer DB active stage_artifact id; fall back to synthetic id."""
+    stage = KIND_TO_STAGE.get(kind)
+    art_kind = KIND_TO_ARTIFACT_KIND.get(kind, kind.value)
+    version = 1
+    versions = increment.get("current_stage_version") or {}
+    if stage and isinstance(versions.get(stage), int):
+        version = versions[stage]
+
+    daos = getattr(ctx, "daos", None)
+    artifact_dao = getattr(daos, "artifact", None) if daos is not None else None
+    task = getattr(ctx, "task", None)
+    if artifact_dao is not None and task is not None and stage:
+        row = await artifact_dao.get_active(task.id, stage)
+        if row is not None:
+            return row.id, int(getattr(row, "stage_version", None) or version)
+
+    return _art_id(art_kind), version
+
+
+async def invoke_capability(
+    kind: PlanStepKind,
+    *,
+    ctx: Any | None,
+    state: Mapping[str, Any],
+    nodes: Mapping[PlanStepKind, NodeFn] | None = None,
+) -> CapabilityOutcome:
+    """Run the stage node for ``kind`` (or stub when ``ctx`` is absent)."""
+    art_kind = KIND_TO_ARTIFACT_KIND.get(kind, kind.value)
+    if ctx is None:
+        return CapabilityOutcome(
+            artifact_id=_art_id(art_kind),
+            artifact_kind=art_kind,
+            increment={},
+            payload=None,
+            version=1,
+        )
+
+    node_map = dict(default_nodes() if nodes is None else nodes)
+    node = node_map.get(kind)
+    if node is None:
+        return CapabilityOutcome(
+            artifact_id=_art_id(art_kind),
+            artifact_kind=art_kind,
+            increment={},
+            payload=None,
+            version=1,
+        )
+
+    hydrated = hydrate_state_from_artifacts(state)
+    increment = await node(ctx, hydrated)
+    if not isinstance(increment, dict):
+        increment = {}
+    art_id, version = await _resolve_artifact_id(kind, ctx, increment)
+    payload = _payload_from_increment(kind, increment)
+    return CapabilityOutcome(
+        artifact_id=art_id,
+        artifact_kind=art_kind,
+        increment=increment,
+        payload=payload,
+        version=version,
+    )
 
 
 def make_capability_tools(*, runner: Callable[..., Any] | None = None) -> list:
@@ -78,7 +263,7 @@ KIND_TO_CAPABILITY: dict[PlanStepKind, str] = {
 
 
 def dispatch_capability(kind: PlanStepKind, *, tools: list | None = None) -> str:
-    """Run the capability tool for ``kind`` synchronously; return artifact id string."""
+    """Sync stub dispatch (no TaskContext); prefer :func:`invoke_capability` in control loop."""
     tool_list = tools if tools is not None else make_capability_tools()
     by_name = {t.name: t for t in tool_list}
     name = KIND_TO_CAPABILITY.get(kind)

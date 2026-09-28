@@ -176,7 +176,7 @@ def _make_app(tmp_path):
         conn = await aiosqlite.connect(str(ckpt_path), check_same_thread=False)
         saver = AsyncSqliteSaver(conn)
         await saver.setup()
-        g = build_graph(saver, nodes={"intake": lambda ctx, state: {}})
+        g = build_graph(saver)
         db = Database(db_path)
         graphs = GraphRegistry.from_graph(CASE_DESIGNER, g)
         bus = EventBus(EventDAO(db))
