@@ -13,7 +13,7 @@ from typing import TypedDict
 
 
 class TaskState(TypedDict, total=False):
-    """主图全量状态（dd §7.1）。"""
+    """主图全量状态（控制面 Plan-Execute；兼容旧阶段字段）。"""
 
     task_id: str
     graph_run_id: str
@@ -31,3 +31,11 @@ class TaskState(TypedDict, total=False):
     current_stage_version: dict[str, int]
     # 批次游标：node -> {idempotency_nonce, next_index, ...}（WP-18）
     batch_cursor: dict[str, dict]
+    # ---- Plan-Execute 控制面 ----
+    agent_plan: dict
+    plan_cursor: str | None
+    artifacts: dict
+    subtask: dict | None
+    reflection_log: list[dict]
+    human_gates: dict
+    _reflect_decision: str
