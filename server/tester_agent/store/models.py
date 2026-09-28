@@ -135,6 +135,7 @@ class TaskRow:
     error_info: str | None = None
     created_at: str = ""
     updated_at: str = ""
+    current_plan_artifact_id: str | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "TaskRow":
@@ -201,6 +202,7 @@ class ArtifactRow:
     progress: str | None = None
     confirmed_by: str | None = None
     created_at: str = ""
+    kind: str | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "ArtifactRow":
@@ -220,6 +222,7 @@ class ArtifactRow:
         status: str = "active",
         progress: list[dict] | None = None,
         confirmed_by: str | None = None,
+        kind: str | None = None,
         now: str | None = None,
     ) -> "ArtifactRow":
         if payload is None:
@@ -242,6 +245,7 @@ class ArtifactRow:
             progress=_dumps(progress) if progress is not None else None,
             confirmed_by=confirmed_by,
             created_at=now or utcnow_iso(),
+            kind=kind if kind is not None else stage,
         )
 
     def payload_dict(self) -> dict:
@@ -341,7 +345,7 @@ class TaskDAO:
         "id, conversation_id, workspace_id, status, current_stage, "
         "requirement_ref, clauses, langgraph_thread_id, graph_run_id, "
         "runner_heartbeat, cancel_requested, snapshot_level, error_info, "
-        "created_at, updated_at"
+        "created_at, updated_at, current_plan_artifact_id"
     )
 
     async def create(self, task: TaskRow) -> None:
@@ -351,7 +355,7 @@ class TaskDAO:
             task.updated_at = task.created_at
         await self._db.aexecute(
             "INSERT INTO task (" + self._COLUMNS + ") "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 task.id,
                 task.conversation_id,
@@ -368,6 +372,7 @@ class TaskDAO:
                 task.error_info,
                 task.created_at,
                 task.updated_at,
+                task.current_plan_artifact_id,
             ),
         )
 
@@ -507,6 +512,17 @@ class TaskDAO:
         if res.rowcount == 0:
             raise NotFoundError(f"任务不存在：{task_id}")
 
+    async def set_current_plan_artifact(
+        self, task_id: str, artifact_id: str | None
+    ) -> None:
+        """指向当前 active AgentPlan artifact。"""
+        res = await self._db.aexecute(
+            "UPDATE task SET current_plan_artifact_id = ?, updated_at = ? WHERE id = ?",
+            (artifact_id, utcnow_iso(), task_id),
+        )
+        if res.rowcount == 0:
+            raise NotFoundError(f"任务不存在：{task_id}")
+
     async def is_cancel_requested(self, task_id: str) -> bool:
         row = await self._db.aquery_one(
             "SELECT cancel_requested FROM task WHERE id = ?", (task_id,)
@@ -575,16 +591,18 @@ class ArtifactDAO:
 
     _COLUMNS = (
         "id, task_id, stage, graph_run_id, stage_version, origin, status, "
-        "payload, progress, confirmed_by, created_at"
+        "payload, progress, confirmed_by, created_at, kind"
     )
 
     async def put(self, a: ArtifactRow) -> None:
         if not a.created_at:
             a.created_at = utcnow_iso()
+        if a.kind is None:
+            a.kind = a.stage
         try:
             await self._db.aexecute(
                 "INSERT INTO stage_artifact (" + self._COLUMNS + ") "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     a.id,
                     a.task_id,
@@ -597,6 +615,7 @@ class ArtifactDAO:
                     a.progress,
                     a.confirmed_by,
                     a.created_at,
+                    a.kind,
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -796,6 +815,101 @@ class ArtifactDAO:
             "UPDATE stage_artifact SET progress = ? WHERE id = ?",
             (_dumps(batches), art.id),
         )
+
+
+# ---------- SubtaskDAO ----------
+
+
+@dataclass
+class SubtaskRow:
+    id: str
+    task_id: str
+    thread_id: str
+    kind: str
+    status: str
+    result_artifact_id: str | None = None
+    created_at: str = ""
+    updated_at: str = ""
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "SubtaskRow":
+        return cls(**{f.name: row[f.name] for f in fields(cls)})
+
+
+class SubtaskDAO:
+    def __init__(self, db: Database):
+        self._db = db
+
+    _COLUMNS = (
+        "id, task_id, thread_id, kind, status, result_artifact_id, "
+        "created_at, updated_at"
+    )
+
+    async def create(self, row: SubtaskRow) -> None:
+        ts = utcnow_iso()
+        if not row.created_at:
+            row.created_at = ts
+        if not row.updated_at:
+            row.updated_at = row.created_at
+        await self._db.aexecute(
+            "INSERT INTO subtask (" + self._COLUMNS + ") "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                row.id,
+                row.task_id,
+                row.thread_id,
+                row.kind,
+                row.status,
+                row.result_artifact_id,
+                row.created_at,
+                row.updated_at,
+            ),
+        )
+
+    async def get(self, subtask_id: str) -> SubtaskRow:
+        row = await self._db.aquery_one(
+            f"SELECT {self._COLUMNS} FROM subtask WHERE id = ?",
+            (subtask_id,),
+        )
+        if row is None:
+            raise NotFoundError(f"子任务不存在：{subtask_id}")
+        return SubtaskRow.from_row(row)
+
+    async def list_by_task(self, task_id: str) -> list[SubtaskRow]:
+        rows = await self._db.aquery(
+            f"SELECT {self._COLUMNS} FROM subtask WHERE task_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (task_id,),
+        )
+        return [SubtaskRow.from_row(r) for r in rows]
+
+    async def get_running(self, task_id: str) -> SubtaskRow | None:
+        row = await self._db.aquery_one(
+            f"SELECT {self._COLUMNS} FROM subtask "
+            "WHERE task_id = ? AND status = 'running' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (task_id,),
+        )
+        return SubtaskRow.from_row(row) if row else None
+
+    async def update_status(
+        self,
+        subtask_id: str,
+        *,
+        status: str,
+        result_artifact_id: str | None | object = _UNSET,
+    ) -> None:
+        sets = ["status = ?", "updated_at = ?"]
+        params: list[Any] = [str(status), utcnow_iso()]
+        if result_artifact_id is not _UNSET:
+            sets.append("result_artifact_id = ?")
+            params.append(result_artifact_id)
+        params.append(subtask_id)
+        res = await self._db.aexecute(
+            f"UPDATE subtask SET {', '.join(sets)} WHERE id = ?", params
+        )
+        if res.rowcount == 0:
+            raise NotFoundError(f"子任务不存在：{subtask_id}")
 
 
 # ---------- TestcaseDAO ----------

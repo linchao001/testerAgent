@@ -41,6 +41,7 @@ BUILTIN_AGENT_CONFIG = {
     "ambiguity_check": True,
     "prompts_dir": "server/prompts",
     "retrieval_overrides": {},
+    "enable_tools_stages": [],
 }
 DEFAULT_RUNTIME_CONFIG = {
     "llm_concurrency": 4,
@@ -65,6 +66,16 @@ DEFAULT_RUNTIME_CONFIG = {
     "index_mirror_ttl_min": 60,
     "coverage_max_rounds": 2,
     "export_sync_limits": {"cases": 200, "bytes": 20971520},
+    "tool_bash_timeout_ms": 300000,
+    "tool_max_output_chars": 16000,
+    "tool_agent_max_steps": 12,
+    "tool_shell_backend": "auto",
+    "human_gate_link": True,
+    "human_gate_point": True,
+    "human_gate_review": True,
+    "reflect_max_per_step": 2,
+    "replan_max": 3,
+    "subtask_timeout_sec": 600,
 }
 
 
