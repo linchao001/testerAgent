@@ -25,7 +25,11 @@ from tester_agent.graph.constants import (
     STAGE_LINK_IDENTIFY,
     STAGE_POINT_WRITE,
 )
-from tester_agent.graph.main_graph import STAGE_NODES, build_graph
+from tester_agent.graph.main_graph import (
+    STAGE_NODES,
+    build_graph,
+    build_legacy_stage_graph,
+)
 from tester_agent.graph.wrap import NodeNotImplemented
 from tester_agent.runtime.context import AppContext, TaskContext
 
@@ -93,7 +97,7 @@ async def saver(tmp_path):
 
 
 def test_graph_compiles_without_checkpointer():
-    graph = build_graph(None)
+    graph = build_legacy_stage_graph(None)
     drawn = graph.get_graph()
     assert set(drawn.nodes) == {
         "__start__", "__end__", *STAGE_NODES, GATE_CP1, GATE_CP2,
@@ -112,7 +116,7 @@ def test_graph_compiles_without_checkpointer():
 
 
 def test_interrupt_before_static_breakpoints():
-    graph = build_graph(None)
+    graph = build_legacy_stage_graph(None)
     assert tuple(graph.interrupt_before_nodes) == (GATE_CP1, GATE_CP2)
 
 
@@ -336,7 +340,7 @@ async def test_functional_interrupt_inside_wrapped_node(saver):
 
 async def test_stub_node_fails_internal_when_reached(saver):
     ctx = _make_ctx()
-    graph = build_graph(saver)  # 全占位
+    graph = build_legacy_stage_graph(saver)  # 全占位
     with pytest.raises(AppError) as ei:
         await graph.ainvoke({"clauses": []}, _cfg("t12", ctx))
     assert ei.value.code == "INTERNAL"
