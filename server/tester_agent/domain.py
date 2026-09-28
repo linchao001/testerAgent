@@ -73,6 +73,9 @@ class MessageKind(StrEnum):
     CHECKPOINT_REVISION = "checkpoint_revision"
     CHANGE_REQUEST = "change_request"
     REGEN_INSTRUCTION = "regen_instruction"
+    PLAN_REVISION = "plan_revision"
+    REVIEW_DECISION = "review_decision"
+    GATE_CONFIRM = "gate_confirm"
 
 
 class EntryType(StrEnum):
@@ -348,3 +351,71 @@ class ImpactAnalysis(BaseModel):
     def affected_points(self) -> list[str]:
         """受影响的 point_id 集合（case 作废判定用）。"""
         return list(dict.fromkeys(self.affected_point_ids))
+
+
+# ---------- Plan-Execute + Reflexion（控制面主图） ----------
+
+
+class PlanStepKind(StrEnum):
+    INTAKE_PARSE = "intake_parse"
+    COVERAGE_DESIGN = "coverage_design"
+    POINT_DESIGN = "point_design"
+    CASE_GENERATE = "case_generate"
+    REVIEW_COVERAGE = "review_coverage"
+    REVIEW_QUALITY = "review_quality"
+    REVIEW_ADOPTION = "review_adoption"
+    REPAIR = "repair"
+    AWAIT_HUMAN = "await_human"
+
+
+class PlanStep(BaseModel):
+    step_id: str
+    kind: PlanStepKind
+    goal: str
+    input_refs: list[str] = []
+    output_ref: str | None = None
+    status: Literal["pending", "running", "done", "failed", "skipped"] = "pending"
+    requires_confirm: bool = False
+    max_reflect: int = 2
+
+
+class AgentPlan(BaseModel):
+    plan_id: str
+    version: int
+    goal: str
+    steps: list[PlanStep]
+    status: Literal["draft", "active", "completed", "failed"] = "active"
+    replan_count: int = 0
+
+
+class SubtaskResult(BaseModel):
+    subtask_id: str
+    kind: str
+    thread_id: str
+    status: Literal["running", "done", "failed", "cancelled"]
+    summary: str = ""
+    output_ref: str | None = None
+
+
+class ReviewProposalItem(BaseModel):
+    target_id: str
+    action: Literal[
+        "adopt", "edit_adopt", "reject", "add_point", "add_case", "repair"
+    ]
+    rationale: str
+    confidence: float = 0.5
+    patch: dict | None = None
+
+
+class ReviewProposal(BaseModel):
+    scope: str
+    items: list[ReviewProposalItem]
+    matrix_ref: str | None = None
+    degraded: bool = False
+
+
+class HumanDecision(BaseModel):
+    gate_kind: Literal["plan_confirm", "review_decision"]
+    action: Literal["confirm", "modify", "reject_rerun"]
+    artifact_id: str
+    payload: dict | None = None
