@@ -115,14 +115,16 @@ def route_after_dispatch(state: dict) -> str:
 
 
 def execute_step_node(state: dict) -> dict[str, Any]:
-    """Stub execute: mark current step done (real capabilities in Task 5)."""
+    """Execute current step via capability dispatch (stub tools until wired to ctx)."""
+    from ...tools.capabilities import dispatch_capability
+
     plan = AgentPlan.model_validate(state["agent_plan"])
     cursor = state.get("plan_cursor")
     artifacts = dict(state.get("artifacts") or {})
     for step in plan.steps:
         if step.step_id == cursor:
-            if step.status == "pending" or step.status == "running":
-                art_id = step.output_ref or f"art-{step.step_id}-{uuid.uuid4().hex[:8]}"
+            if step.status in ("pending", "running"):
+                art_id = step.output_ref or dispatch_capability(step.kind)
                 artifacts.setdefault(
                     art_id,
                     {
