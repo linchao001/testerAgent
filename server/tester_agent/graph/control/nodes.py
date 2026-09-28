@@ -115,28 +115,73 @@ def route_after_dispatch(state: dict) -> str:
 
 
 def execute_step_node(state: dict) -> dict[str, Any]:
-    """Execute current step via capability dispatch (stub tools until wired to ctx)."""
+    """Execute current step via capability dispatch or review builders."""
     from ...tools.capabilities import dispatch_capability
+    from ..subtasks.review_adoption import build_adoption_proposal
+    from ..subtasks.review_coverage import build_coverage_proposal
+    from ..subtasks.review_quality import build_quality_proposal
 
     plan = AgentPlan.model_validate(state["agent_plan"])
     cursor = state.get("plan_cursor")
     artifacts = dict(state.get("artifacts") or {})
     for step in plan.steps:
-        if step.step_id == cursor:
-            if step.status in ("pending", "running"):
-                art_id = step.output_ref or dispatch_capability(step.kind)
-                artifacts.setdefault(
-                    art_id,
-                    {
-                        "kind": step.kind.value,
-                        "version": 1,
-                        "payload_ref": art_id,
-                        "confirmed_by": None,
-                    },
-                )
-                step.output_ref = art_id
-                step.status = "done"
+        if step.step_id != cursor:
+            continue
+        if step.status not in ("pending", "running"):
             break
+        if step.kind == PlanStepKind.REVIEW_COVERAGE:
+            proposal = build_coverage_proposal(
+                uncovered_clause_ids=list(step.input_refs or []),
+                matrix_ref=None,
+            )
+            art_id = step.output_ref or f"art-review-cov-{uuid.uuid4().hex[:8]}"
+            artifacts[art_id] = {
+                "kind": "review_proposal",
+                "version": 1,
+                "payload_ref": art_id,
+                "confirmed_by": None,
+                "payload": proposal.model_dump(),
+            }
+            step.output_ref = art_id
+            step.status = "done"
+        elif step.kind == PlanStepKind.REVIEW_QUALITY:
+            proposal = build_quality_proposal(case_issues=[])
+            art_id = step.output_ref or f"art-review-qual-{uuid.uuid4().hex[:8]}"
+            artifacts[art_id] = {
+                "kind": "review_proposal",
+                "version": 1,
+                "payload_ref": art_id,
+                "confirmed_by": None,
+                "payload": proposal.model_dump(),
+            }
+            step.output_ref = art_id
+            step.status = "done"
+        elif step.kind == PlanStepKind.REVIEW_ADOPTION:
+            proposal = build_adoption_proposal(cases=[])
+            art_id = step.output_ref or f"art-review-ad-{uuid.uuid4().hex[:8]}"
+            artifacts[art_id] = {
+                "kind": "review_proposal",
+                "version": 1,
+                "payload_ref": art_id,
+                "confirmed_by": None,
+                "payload": proposal.model_dump(),
+            }
+            step.output_ref = art_id
+            step.status = "done"
+        else:
+            art_id = step.output_ref or dispatch_capability(step.kind)
+            artifacts.setdefault(
+                art_id,
+                {
+                    "kind": step.kind.value,
+                    "version": 1,
+                    "payload_ref": art_id,
+                    "confirmed_by": None,
+                },
+            )
+            step.output_ref = art_id
+            step.status = "done"
+        break
     return {
         "agent_plan": plan.model_dump(),
         "artifacts": artifacts,
