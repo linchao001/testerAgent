@@ -171,7 +171,8 @@ async def test_run_chat_turn_passes_memory_manager_to_tools(
             return {"provider": "deepseek", "model": "x"}
 
         def runtime_dict(self):
-            return {"tool_agent_max_steps": 3}
+            # WP-31：本测试断言 system_prompt 携带记忆指引，显式走旧路径
+            return {"tool_agent_max_steps": 3, "context.enabled": False}
 
     class _CfgDao:
         def __init__(self, *_a):

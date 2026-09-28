@@ -95,9 +95,65 @@
 | WP-X1 | E2E + 场景 8/9 | done | 2026-09-28 | §3 记录区 [WP-X1] |
 | WP-X2 | 收尾发布与文档回灌 | done | 2026-09-28 | §3 记录区 [WP-X2] |
 
+### ε 上下文管理层（context，设计 2026-09-28）
+
+| 编号 | 名称 | 状态 | 完成日期 | 交接记录锚点 |
+|---|---|---|---|---|
+| WP-30 | context 纯函数层（models/tokens/budget/journal/store/policy/scopes/assembler/p0/registry） | done | 2026-09-28 | §3 记录区 [WP-30] |
+| WP-31 | 消费面接线（chat_agent / tool_agent hook / batch-item scope / methodology.md，feature flag 回退） | done | 2026-09-28 | §3 记录区 [WP-31] |
+
 ## 3. 交接记录（按完成顺序倒序追加，最新在最上）
 
 <!-- 记录区开始：新记录插入到本行下方 -->
+
+### [WP-31] context 消费面接线 — done（2026-09-28）
+
+- 状态：done（设计/计划同 WP-30；范围计划 Wave B Tasks 8–11）
+- 交付物：
+  - **Task 8 组合根接线位**：[runtime/context.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/runtime/context.py) `AppContext.context_registry`（default_factory 独立实例，可注入）、`DAOs.journal`（占位字段）、`TaskContext.context_store`（默认 None）；[context/registry.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/context/registry.py) 重写为 `ContextRegistry` 实例类（模块级默认实例与函数委托保留，WP-30 路径不变）；测试 `tests/test_context_wiring.py`（6）
+  - **Task 9 对话历史窗**：[runtime/chat_agent.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/runtime/chat_agent.py) 按 `context.enabled` 分派——context 路径 owner(conversation) store 首次从 MessageDAO 过渡回填 CHAT_TURN（role + turn_seq）、`bootstrap_p0(methodology + extra_static persona)`、`scope(turn_seq=)` 内 `assemble(CHAT)`、`run_tool_agent(initial_messages=, before_model_hook=)`，assistant/异常文本落库后同 turn_seq append；`_run_legacy` 保持 40 条旧路径；新增 [prompts/methodology.md](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/prompts/methodology.md)（v2026-09-28.1，等价类/边界值/判定表/场景法）；[api/conversations.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/api/conversations.py) 透传 `app_ctx.context_registry`；测试 `tests/test_context_chat.py`（7）
+  - **Task 10 工具环 hook**：[graph/tool_agent.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/graph/tool_agent.py) `build_tool_agent_graph` 与 `run_tool_agent` 增默认 None 的 `before_model_hook`，并支持 `initial_messages`（history/system_prompt 改可选）；新增 [graph/context_hooks.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/graph/context_hooks.py) `make_tool_message_hook`：新 ToolMessage 登记 P2 TOOL_RESULT，超 2000 字符者 demote(budget_cut) 并以 tombstone SystemMessage 替换模型输入位；只改入参不回写 state；测试 `tests/test_context_tool_agent.py`（5）
+  - **Task 11 批次/条目隔离**：[graph/batch.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/graph/batch.py) worker 包 `scope(phase=WRITE, batch_id=)`、批次成功后 `close_batch`（context_store None 时全跳过）；[graph/nodes/case_generate.py](file:///Users/test/Documents/python_project/testerAgent/server/tester_agent/graph/nodes/case_generate.py) 每点 push `item_key={batch_id}:{point_id}` 并 append ITEM 级 ARTIFACT_DIGEST（确定性 entry_id，repair 幂等）；`context.case_index_digest` 默认关、开时向本批 LLM 注入一行已生成用例索引；`test_context_scoping.py` +3、`test_case_generate.py` +2
+- 验收：
+  - 全量 `cd server && ../.venv/bin/python -m pytest tests/ -p no:zframe --tb=no` → **966 passed**（基线 943 + 新增 23：wiring 6 / chat 7 / tool_agent 5 / scoping +3 / case_generate +2）
+  - 全量 `-W error`：唯一失败仍为 WP-30 已登记预存 flaky——Python 3.14 未关闭 sqlite 连接 GC 时序 `ExceptionGroup: multiple unraisable exception warnings (2 sub-exceptions)`；加入新文件后归因在测试间漂移（本次落在 test_context_tool_agent::test_consecutive_tool_calls_all_replaced 与 test_context_scoping::test_item_assembly_*），两个文件隔离 `-W error` 运行均全绿；966 用例无业务回归
+  - 反向依赖：新增 hook 放 graph 层（graph → context 合法），context 包零新外层 import
+- 与设计偏离（同时登记于代码 docstring）：
+  ① `AppContext.context_registry` 字段为 dd 字段表未列项（默认工厂持有独立实例；WP-30 registry 已重构为实例类，偏离登记在 registry.py docstring）；
+  ② `DAOs.journal` 本包仅落 `Any | None` 占位字段——具体 `ContextJournalDAO` 随 005 迁移在 WP-32 Task 12 落型；
+  ③ model_config 无 `context_window` 既有约定键，组装时 `.get("context_window", 128000)` 兜底；
+  ④ P0 形态：methodology 走模板，会话 persona（含记忆指引）经 `extra_static` 注入，未并入模板；
+  ⑤ 首次会话从 MessageDAO 回填 CHAT_TURN 为过渡逻辑（代码内 TODO 指向 WP-32 Task 13 的 rebuild_store + journal 重放）；
+  ⑥ case_index_digest 直接注入 case_generate 的 LLM messages（该节点不经 assemble），未落 ContextEntry；
+  ⑦ 既有 `test_memory_tools.py::test_run_chat_turn_passes_memory_manager_to_tools` 显式置 `context.enabled=false` 走旧路径，断言意图（记忆指引入 system_prompt、manager 入 tools）不变
+- 遗留：
+  - Runner 尚未向 TaskContext 注入 context_store（待 WP-32 迁移/开关键落地后接线）；`DEFAULT_RUNTIME_CONFIG` 无 context.* 键（Task 12）；owner store 仅内存态、进程重启不恢复（Task 13 rebuild）；JournalSink 真实落库仍 pending
+- 下个包起步点：**WP-32**。Task 12：① 新增迁移 005（context_journal 表，只增不改）；② 落 `ContextJournalDAO`（适配 JournalSink，替换 DAOs.journal 占位）；③ `DEFAULT_RUNTIME_CONFIG` 增加 context.* 键并接 Runner 注入 context_store。Task 13：rebuild_store（artifact/message 回放 + journal）替换 chat 过渡回填。第一步先读 design §8 与 store/db.py DEFAULT_RUNTIME_CONFIG 现状
+
+### [WP-30] context 纯函数层 — done（2026-09-28）
+
+- 状态：done（设计 `docs/superpowers/specs/2026-09-28-context-management-design.md` v0.5，计划 `docs/superpowers/plans/2026-09-28-context-management.md`）
+- 交付物：
+  - 新增叶子包 `server/tester_agent/context/`：`tokens.py`（自 ops_b 平移，ops_b 改 re-export）、`models.py`（5 枚举 + ContextEntry/EvictionRecord/AssemblyReport/ContextView，extra=forbid）、`budget.py`（6 profile 预算 + 10% spill capacity + 80% 窗口校验）、`journal.py`（JournalSink 协议/JournalRecord/8 action）、`store.py`（append 幂等+scope 继承、demote/evict/pin/set_goal/bulk_demote/close_batch/flush_degraded/frozen/bind_p0，journal 失败降级不阻断）、`policy.py`（打分 0.35R+0.30引用+0.20目标+0.15种类−重复、eviction_order、T3 漂移、tombstone 文案）、`scopes.py`（contextvars 作用域栈 async `scope()` + visible_in_window）、`assembler.py`（唯一组装入口四步管线 + AssemblyResult）、`p0.py`（bootstrap_p0：sha256[:12] 版本）、`registry.py`（owner 注册表，重复 start 幂等）、`_time.py`
+  - 新增测试 90 个：`tests/test_context_{tokens(8),models(9),budget(9),store(15),policy(14),scoping(10),assembler(13),p0(7),registry(5)}.py`；`ops_b.py` 仅 import 改动，`test_retrieval_ops_b.py` 53 用例回归通过
+- 验收：
+  - `cd server && ../.venv/bin/python -m pytest tests/test_context_*.py tests/test_retrieval_ops_b.py -W error -q` 全绿（143 用例）
+  - 全量 `pytest tests/ --tb=no -q` exit=0（共收集 920 用例）
+  - 全量 `-W error`：context 用例 0 失败；残留失败为既有 Python 3.14 `ExceptionGroup: multiple unraisable exception warnings`（未关闭 sqlite 连接 GC 时序），落点随测试顺序漂移（本次落在 test_graph_build；排除 context 新文件后落在 test_llm/test_skeleton/test_tool_agent_graph，均为已登记 flaky 家族），单测隔离运行 3/3 通过
+  - 反向依赖扫描：`context/` 内无 `runtime/graph/memory/adapters/store（外层包）` import（grep 复核；仅允许依赖 domain/errors/prompts/logging/第三方）
+- 与设计偏离（不碰冻结签名）：
+  ① `ContextEntry` 增加可选 `role` 字段（CHAT_TURN 的 user/assistant → HumanMessage/AIMessage，spec 模型表未列角色字段）；
+  ② 裁剪阈值用 `ProfileBudget.capacity()`（本区+10% spill），仅超 capacity 才出窗；
+  ③ T3 漂移条目一旦满足"非pinned+overlap=0+距离>W"即无条件 goal_drift 出窗（不要求预算先超限），预算未超也裁；
+  ④ CHAT profile 最近 K=6 轮为**硬窗口**（reason=`chat_window`，spec 未命名该 reason），不依赖预算/漂移启发式；
+  ⑤ 消息粒度：P1 合并为单条 `【业务知识】` SystemMessage（按挂载 step_seq 降序、`---` 分隔），P2 非对话条目逐条 SystemMessage，CHAT_TURN 按 (turn_seq,created_at) 渲染 Human/AI；
+  ⑥ 当次新裁条目不在当次窗口渲染墓碑（demote 落 store，下次组装进入 tombstone 段，最多 20 行 + "其余 N 条已归档"）；
+  ⑦ registry 为进程内 dict、无锁（当前调用面单事件循环）；scopes 仅提供 async context manager
+- 遗留与提问：
+  - JournalSink 的真实落地（DB/文件 sink）不在 WP-30，后续 WP 承接；registry 无 shutdown/生命周期清理钩子；
+  - AST/import-linter 门禁**尚未配置**，叶子层约束当前靠 grep 人工保证，建议后续 WP 加 import-linter 契约固化；
+  - `AssemblyReport` 的 P0 token 仅按传入消息估算；P0 超 p0 预算时不裁不记 override（P0 永不淘汰语义），如需观测请 WP-31 决定
+- 下个包起步点：**WP-31 消费面接线**。① `runtime/chat_agent.py` 用 registry+assemble 替换 40 条硬编码历史（CHAT profile + role 字段 + K=6 硬窗口）；② `graph/tool_agent.py` 增默认 None 的 `before_model_hook`；③ `graph/batch.py`/`nodes/case_generate.py` push `scope(phase=WRITE, batch_id=, item_key=)`；④ 新增 `prompts/methodology.md` 并由 bootstrap_p0 引导、store.bind_p0；⑤ feature flag `context.enabled=false` 时旧行为完全可回退。第一步先读 design §8 接线序列与 runtime/chat_agent.py 现状
 
 ### [Reme-Memory] 嵌入式 ReMe 记忆模块 — done（2026-09-28）
 

@@ -215,12 +215,14 @@ async def send_message(
 
     assistant_out: MessageOut | None = None
     if body.kind == "chat":
+        app_ctx = getattr(request.app.state, "app_ctx", None)
         assistant = await run_chat_turn(
             db=_db(request),
             conv=conv,
             file_store=request.app.state.file_store,
             user_message=msg,
             memory_pool=getattr(request.app.state, "memory_pool", None),
+            context_registry=app_ctx.context_registry if app_ctx is not None else None,
         )
         assistant_out = _msg_out(assistant)
         await conv_dao.touch(conversation_id)

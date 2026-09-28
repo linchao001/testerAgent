@@ -141,4 +141,5 @@ Wave 6  WP-X1 → WP-X2
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v1.1 | 2026-09-28 | 新增 ε 线「上下文管理层」：WP-30 context 纯函数层（done）/ WP-31 消费面接线（todo）；设计与计划见 `docs/superpowers/{specs,plans}/2026-09-28-context-management*`，状态与交接单在 handoff.md |
 | v1.0 | 2026-09-26 | 初版：29 个后端 WP + 6 个前端 WP + 2 spike + 2 收尾包 |

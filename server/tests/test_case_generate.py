@@ -22,14 +22,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tester_agent.adapters.reme import Entry, EntryType, IndexMirror
 from tester_agent.domain import (
     CaseFileContent,
+    CaseRecord,
     CaseStep,
+    Lineage,
     LinkPlan,
     LinkRef,
     PointPlan,
+    ReviewStatus,
     StoryRef,
     TestPoint as PointModel,
     TraceRefs,
 )
+from tester_agent.context.journal import JournalAction, JournalRecord
+from tester_agent.context.models import EntryKind, EntryStatus
+from tester_agent.context.store import ContextStore
 from tester_agent.errors import LLMBadOutput
 from tester_agent.graph.batch import run_in_batches
 from tester_agent.graph.constants import STAGE_CASE_GENERATE
@@ -451,3 +457,91 @@ async def test_case_generate_missing_point_plan_raises(make_stack):
     stack = await make_stack(script=[])
     with pytest.raises(Exception):
         await case_generate_node(stack.ctx, {})
+
+
+# ---------- WP-31 Task 11：context_store 接线 ----------
+
+
+class _RecordingJournal:
+    def __init__(self) -> None:
+        self.records: list[JournalRecord] = []
+
+    async def record(self, records: list[JournalRecord]) -> None:
+        self.records.extend(records)
+
+
+async def _seed_active_case_row(ctx) -> None:
+    content = CaseFileContent(
+        case_id="seed-case-1",
+        point_id="pt-seed",
+        stage_version=1,
+        title="历史用例X",
+        priority="P1",
+        preconditions=[],
+        steps=[CaseStep(seq=1, action="操作", expect="结果")],
+        test_data=None,
+        trace_refs=TraceRefs(clause_ids=[], entry_ids=[], point_ids=["pt-seed"]),
+    )
+    record = CaseRecord(
+        case_id=content.case_id,
+        point_id=content.point_id,
+        stage_version=1,
+        lineage=Lineage(root_case_id=content.case_id),
+        status="active",
+        review_status=ReviewStatus.PENDING,
+        file_path="seed.md",
+        content_hash="h",
+        title=content.title,
+        trace_refs=content.trace_refs,
+    )
+    await ctx.daos.testcase.put_batch(
+        [CaseRow.from_record(TASK, record, batch_id="bseed")]
+    )
+
+
+async def test_case_generate_item_digests_evicted_at_batch_close(make_stack):
+    stack = await make_stack(script=[_mq(), _rr(), CASE_JSON])
+    journal = _RecordingJournal()
+    context_store = ContextStore(
+        owner_type="task", owner_id=TASK, workspace_id=WS, journal=journal
+    )
+    stack.ctx.context_store = context_store
+
+    await case_generate_node(stack.ctx, _state())
+
+    digests = [
+        e
+        for e in context_store.entries()
+        if e.entry_kind is EntryKind.ARTIFACT_DIGEST
+    ]
+    # 两点各一条；批次 close → 全部 EVICTED
+    assert len(digests) == 2
+    assert all(e.status is EntryStatus.EVICTED for e in digests)
+    # journal：batch_close marker
+    markers = [r for r in journal.records if r.action == JournalAction.BATCH_CLOSE]
+    assert len(markers) == 1 and markers[0].reason == "batch_closed"
+    # 默认不开 case_index_digest：LLM 消息无索引行
+    contents = [m["content"] for m in stack.llm.calls[-1]["messages"]]
+    assert not any("【已生成用例索引】" in c for c in contents)
+
+
+async def test_case_index_digest_injected_when_enabled(make_stack):
+    stack = await make_stack(script=[_mq(), _rr(), CASE_JSON])
+    await ConfigDAO(stack.db).update_runtime({"context.case_index_digest": True})
+    context_store = ContextStore(
+        owner_type="task", owner_id=TASK, workspace_id=WS
+    )
+    stack.ctx.context_store = context_store
+    await _seed_active_case_row(stack.ctx)
+
+    await case_generate_node(stack.ctx, _state())
+
+    sys_msgs = [
+        m
+        for m in stack.llm.calls[-1]["messages"]
+        if m["role"] == "system"
+    ]
+    index = [m for m in sys_msgs if "【已生成用例索引】" in m["content"]]
+    assert len(index) == 1
+    assert "pt-seed:历史用例X" in index[0]["content"]
+

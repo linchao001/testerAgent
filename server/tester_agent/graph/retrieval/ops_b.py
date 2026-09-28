@@ -30,7 +30,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import re
 import time
 from collections.abc import Mapping
@@ -80,18 +79,10 @@ class RetrievalOutcome(BaseModel):
 
 
 # ---------- token 估算（dd §8.2：中英混合） ----------
+# WP-30：实现平移至 context 叶子层（context/tokens.py），此处保留 re-export，
+# 既有 import 路径（tester_agent.graph.retrieval.ops_b.estimate_tokens）零变化。
 
-_CJK_CHAR = re.compile(r"[\u4e00-\u9fff]")
-_ASCII_WORD = re.compile(r"[a-z0-9_]+")
-
-
-def estimate_tokens(text: str) -> int:
-    """``len(cjk_chars) + len(ascii_words) * 1.3``，ceil 取整（保守预算口径）。"""
-    if not text:
-        return 0
-    cjk = len(_CJK_CHAR.findall(text.lower()))
-    ascii_words = len(_ASCII_WORD.findall(text.lower()))
-    return math.ceil(cjk + ascii_words * 1.3)
+from ...context.tokens import estimate_tokens  # noqa: E402,F401
 
 
 # ---------- rerank（dd §8.2：>30 分桶；LLM 失败 → 规则分） ----------

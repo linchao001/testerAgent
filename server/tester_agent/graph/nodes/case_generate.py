@@ -43,6 +43,17 @@ import json
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from ...context._time import utcnow_iso
+from ...context.models import (
+    ContextEntry,
+    ContextPartition,
+    EntryKind,
+    EntryRefs,
+    Phase,
+    ScopeLevel,
+)
+from ...context.policy import programmatic_digest
+from ...context.scopes import scope
 from ...domain import (
     CaseFileContent,
     CaseRecord,
@@ -334,14 +345,15 @@ async def generate_case_batch(
     active artifact 已存在（attach_case_ids 的 progress 写入目标）。
     """
     task = ctx.task
+    runtime_cfg = await _runtime_config(ctx)
     intent = build_case_intent(points)
-    scope = _batch_scope(points, story_to_link or {})
+    retrieve_scope = _batch_scope(points, story_to_link or {})
     outcome = await retrieve_pipeline(
         ctx,
         RETRIEVAL_PRESETS[STAGE_CASE_GENERATE],
         intent,
         batch_id=batch_id,
-        scope=scope,
+        scope=retrieve_scope,
         stage_version=version,
     )
     needed: list[str] = []
@@ -371,6 +383,12 @@ async def generate_case_batch(
         {"role": "system", "content": system},
         {"role": "user", "content": user_content},
     ]
+    # WP-31：case_index_digest 默认关；开时向本批 LLM 注入一行已生成用例索引
+    if bool(runtime_cfg.get("context.case_index_digest", False)):
+        index_line = await _case_index_line(ctx)
+        if index_line:
+            messages.insert(1, {"role": "system", "content": index_line})
+
     result = await ctx.app.llm.chat(messages, json_schema=_CASE_SCHEMA)
     try:
         obj = json.loads(result.content)
@@ -382,6 +400,7 @@ async def generate_case_batch(
         task_id=task.id, version=version, batch_id=batch_id,
     )
     rows = await commit_case_batch(ctx, batch_id, cases, version)
+    await _append_item_digests(ctx, points, cases, version=version, batch_id=batch_id)
 
     asserted_tags = " ".join(f"[ID:{eid}]" for eid in asserted)
     await close_retrieval_trace(ctx, outcome, [result.content, asserted_tags])
@@ -506,6 +525,68 @@ async def case_generate_node(ctx: "TaskContext", state: dict) -> dict[str, Any]:
 
 
 # ---------- 辅助 ----------
+
+
+async def _runtime_config(ctx) -> dict:
+    config = getattr(ctx.app, "config", None)
+    if config is None:
+        return {}
+    try:
+        return (await config.get()).runtime_dict()
+    except Exception:
+        logger.exception("runtime config read failed in case_generate")
+        return {}
+
+
+async def _case_index_line(ctx) -> str:
+    """已生成 active 用例的一行索引（point:title），无 active 时返回空串。"""
+    if ctx.daos is None or ctx.daos.testcase is None:
+        return ""
+    prior = await ctx.daos.testcase.list_all_for_task(ctx.task.id)
+    active = [r for r in prior if r.status == "active"]
+    if not active:
+        return ""
+    return "【已生成用例索引】" + " | ".join(f"{r.point_id}:{r.title}" for r in active)
+
+
+async def _append_item_digests(
+    ctx, points, cases, *, version: int, batch_id: str
+) -> None:
+    """每点一条 ITEM 级 ARTIFACT_DIGEST（条目产生即定性，repair 幂等）。
+
+    ctx.context_store 为 None（旧夹具/开关关闭）时整体跳过；entry_id 确定性
+    派生——同 item_key 重做走 store.append 幂等路径，不产生重复条目。
+    """
+    store = ctx.context_store
+    if store is None:
+        return
+    titles_by_point: dict[str, list[str]] = {}
+    for point, content in cases:
+        titles_by_point.setdefault(point.point_id, []).append(content.title)
+    for point in points:
+        titles = titles_by_point.get(point.point_id)
+        if not titles:
+            continue
+        item_key = f"{batch_id}:{point.point_id}"
+        text = f"{point.title} → {len(titles)} 条用例：" + "；".join(titles)
+        async with scope(phase=Phase.WRITE, batch_id=batch_id, item_key=item_key):
+            await store.append(
+                ContextEntry(
+                    entry_id=(
+                        f"casedigest:{ctx.task.id}:{version}:{batch_id}:{point.point_id}"
+                    ),
+                    partition=ContextPartition.P2,
+                    entry_kind=EntryKind.ARTIFACT_DIGEST,
+                    scope_level=ScopeLevel.ITEM,
+                    content=text,
+                    digest=programmatic_digest(text),
+                    refs=EntryRefs(),
+                    phase=Phase.WRITE,
+                    batch_id=batch_id,
+                    item_key=item_key,
+                    created_at=utcnow_iso(),
+                )
+            )
 
 
 def _parse_link_plan(data: Any) -> LinkPlan | None:

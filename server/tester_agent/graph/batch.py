@@ -29,6 +29,8 @@ import hashlib
 import uuid
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from ..context.models import Phase
+from ..context.scopes import scope
 from ..errors import TaskCancelled
 from ..logging_config import get_logger
 
@@ -210,7 +212,9 @@ async def run_in_batches(
         await _emit_progress(ctx, node, batch_id, done=False, total=n)
 
         try:
-            batch_results = await worker(ctx, batch_id, subset)
+            # WP-31：批内 worker 的条目产生即定性为 WRITE/batch_id
+            async with scope(phase=Phase.WRITE, batch_id=batch_id):
+                batch_results = await worker(ctx, batch_id, subset)
         except Exception:
             progress.mark_failed(batch_id)
             await ctx.daos.artifact.write_progress(artifact.id, progress.dump())
@@ -220,6 +224,11 @@ async def run_in_batches(
         await ctx.daos.artifact.write_progress(artifact.id, progress.dump())
         await _emit_progress(ctx, node, batch_id, done=True, total=n)
         all_results.extend(batch_results)
+
+        # WP-31：批次成功收口——evict 本批 BATCH/ITEM 条目（batch_closed）。
+        # ctx.context_store 为 None（旧夹具/开关关闭）时整体跳过。
+        if ctx.context_store is not None:
+            await ctx.context_store.close_batch(batch_id)
 
     cursor = dict(cursor)
     cursor["next_index"] = n

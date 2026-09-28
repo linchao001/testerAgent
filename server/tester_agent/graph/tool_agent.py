@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Annotated, Sequence, TypedDict
 
@@ -27,8 +28,20 @@ class ToolAgentResult:
     messages: list[BaseMessage] = field(default_factory=list)
 
 
-def build_tool_agent_graph(model: BaseChatModel, tools: list[BaseTool], *, max_steps: int = 12):
-    """Compile model ↔ ToolNode loop."""
+def build_tool_agent_graph(
+    model: BaseChatModel,
+    tools: list[BaseTool],
+    *,
+    max_steps: int = 12,
+    before_model_hook: Callable[[list[BaseMessage], int], Awaitable[list[BaseMessage]]]
+    | None = None,
+):
+    """Compile model ↔ ToolNode loop.
+
+    WP-31：``before_model_hook`` 在每次模型调用前对消息列表做变换（如把
+    超长 ToolMessage 替换为 tombstone）；默认 None 时行为字节不变。hook
+    只改模型入参，不回写图 state（tool_trace 不受影响）。
+    """
 
     bound = model.bind_tools(tools)
     tool_node = ToolNode(tools)
@@ -44,7 +57,10 @@ def build_tool_agent_graph(model: BaseChatModel, tools: list[BaseTool], *, max_s
                 ],
                 "step": step,
             }
-        resp = await bound.ainvoke(state["messages"])
+        msgs: list[BaseMessage] = list(state["messages"])
+        if before_model_hook is not None:
+            msgs = await before_model_hook(msgs, step)
+        resp = await bound.ainvoke(msgs)
         return {"messages": [resp], "step": step}
 
     def should_continue(state: _AgentState) -> str:
@@ -67,14 +83,27 @@ def build_tool_agent_graph(model: BaseChatModel, tools: list[BaseTool], *, max_s
 
 async def run_tool_agent(
     *,
-    history: list[BaseMessage],
-    system_prompt: str,
+    history: list[BaseMessage] | None = None,
+    system_prompt: str | None = None,
     tools: list[BaseTool],
     model: BaseChatModel,
     max_steps: int = 12,
+    before_model_hook: Callable[[list[BaseMessage], int], Awaitable[list[BaseMessage]]]
+    | None = None,
+    initial_messages: list[BaseMessage] | None = None,
 ) -> ToolAgentResult:
-    graph = build_tool_agent_graph(model, tools, max_steps=max_steps)
-    messages: list[BaseMessage] = [SystemMessage(content=system_prompt), *history]
+    """运行工具环。
+
+    消息入口二选一：``initial_messages``（调用方已组装好的完整序列，如
+    context assembler 产出）或默认 ``[SystemMessage(system_prompt), *history]``。
+    """
+    graph = build_tool_agent_graph(
+        model, tools, max_steps=max_steps, before_model_hook=before_model_hook
+    )
+    if initial_messages is not None:
+        messages: list[BaseMessage] = list(initial_messages)
+    else:
+        messages = [SystemMessage(content=system_prompt or ""), *(history or [])]
     result = await graph.ainvoke(
         {"messages": messages, "step": 0},
         {"recursion_limit": max(max_steps * 2 + 2, 8)},

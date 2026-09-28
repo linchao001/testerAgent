@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 
 from ..adapters.llm import LLMClient
 from ..adapters.reme import IndexMirror, ReMeReader, ReMeReaderFactory
+from ..context.registry import ContextRegistry
+from ..context.store import ContextStore
 from ..store.db import Database
 from ..store.models import (
     ArtifactDAO,
@@ -62,6 +64,9 @@ class AppContext:
     bus: "EventBus | None" = None  # WP-21
     registry: "TaskRegistry | None" = None  # WP-22：任务运行锁注册表
     retrieval_cache: "RetrievalCache" = field(default_factory=_default_retrieval_cache)
+    # WP-31：上下文层 owner 注册表（dd 字段表未列；默认工厂构造进程内独立
+    # 实例，调用方可显式注入做隔离测试；单 worker 内存态合法）。
+    context_registry: ContextRegistry = field(default_factory=ContextRegistry)
 
 
 @dataclass
@@ -81,6 +86,9 @@ class DAOs:
     testcase: "TestcaseDAO | None" = None
     trace: "TraceDAO | None" = None
     event: "EventDAO | None" = None  # WP-21：EventBus 落库与 SSE 回放数据源
+    # WP-31 Task 8 预留：具体 ContextJournalDAO 由 WP-32 Task 12 落型；
+    # 此前仅持有字段（测试可塞 fake），默认 None 不影响任何既有路径。
+    journal: Any | None = None
 
 
 @dataclass
@@ -108,6 +116,9 @@ class TaskContext:
     # §6.4③ 取消信号：Runner 在 run 启动时置一个 asyncio.Event，cancel API /
     # 心跳 0 行更新 / 优雅关闭置位；wrap() 与 run_in_batches 在边界调 cancelled()。
     cancel_event: asyncio.Event | None = None
+    # WP-31：owner（task/conversation）的上下文 store；Runner 构造 TaskContext
+    # 时按开关注入，None 时节点一律走旧消息路径（旧夹具/开关关闭兼容）。
+    context_store: ContextStore | None = None
 
     async def cancelled(self) -> bool:
         """批次/节点边界的取消检查（dd §6.4③）；为真时调用方抛 TaskCancelled。
