@@ -2,11 +2,13 @@
 
 | 项 | 内容 |
 |---|---|
-| 版本 | v0.2 |
-| 状态 | 待评审 |
-| 日期 | 2026-09-26 |
-| 对应需求 | [PRD v0.6](file:///Users/test/Documents/python_project/testerAgent/docs/PRD.md) |
+| 版本 | v0.3 |
+| 状态 | 一期候选发布 |
+| 日期 | 2026-09-28 |
+| 对应需求 | [PRD v0.7](file:///D:/code/github/testerAgent/docs/PRD.md) |
 
+> v0.3 变更摘要（WP-X2）：① §8 S1~S7 全部写入一期结论；② §9 开放问题与 PRD v0.7 对齐（Q1/Q2/Q6/Q7/Q11/Q12 closed）；③ 备份 CLI / 导出·提案发布门禁见 detailed-design §19.5 与 `docs/plan/release-checklist.md`。
+>
 > v0.2 变更摘要：针对 v0.1 两轮架构评审（共 39 条意见，处理记录见[附录 A](#附录-a评审意见处理记录)）修订，主要变化：
 > ① 新增 §2.1/§4.5 执行模型（Runner、进程内事件总线、重启 reaper、任务互斥与取消、单 worker 约束、LLMClient 韧性）；
 > ② §3.2/§3.3 补回退与 checkpoint 协调语义、回退影响面分析、DB↔文件原子写入与对账协议；
@@ -344,6 +346,8 @@ testcase.file_path、context_snapshot.snapshot_path 均存相对 `data/` 的路�
 
 ## 4. LangGraph 图设计
 
+> **2026-09-28 范式更新**：生产主图改为控制环 `plan → dispatch → execute_step → await_human → reflect`（动态 Plan-Execute + Reflexion）。旧五阶段拓扑保留为 `build_legacy_stage_graph`。完整契约见 [plan-execute-reflexion 设计](../superpowers/specs/2026-09-28-plan-execute-reflexion-design.md)。下文 §4.1–§4.2 描述的是**遗留阶段图**语义（能力函数仍按阶段实现，由控制环 dispatch）。
+
 ### 4.1 主图状态（State）
 
 ```python
@@ -537,6 +541,17 @@ budget_warning      # {node, tokens_est, budget}
 
 **离线评测（R5，内部基础设施，非用户功能）**：`server/eval/` 提供最小 eval 管线——导入黄金集（Q4：历史需求 + 已采纳用例，5~10 组），可对指定 prompt_template_ver / 预算配置 / 模型跑指定阶段，输出召回率（目标条目是否在 candidates）、注入率、引用率、条款覆盖率与 token/延迟成本，并支持两版配置 diff。该管线复用检索子图与节点函数，不另建一套逻辑；无黄金集前以冒烟集（少量手工构造样例）保证回归。
 
+### 4.6 内置工具与 tool-agent 子图（D17）
+
+用例智能体一期提供 `bash`（持久 shell）与 `str_replace_editor`（view/create/str_replace/insert）：
+
+- **实现**：`server/tester_agent/tools/` + `graph/tool_agent.py`；`ChatOpenAI.bind_tools` ↔ `ToolNode` 循环直至无 tool_calls 或触顶 `tool_agent_max_steps`。
+- **沙箱**：工作区根 `FileStore.root/workspaces/{workspace_id}/`；禁止写入 `**/snapshots/**`；owner 隔离（`conversation:{id}` / `task:{id}`）。
+- **对话**：`POST /conversations/{id}/messages` 且 `kind=chat` → 跑子图 → 落库 assistant，`payload.tool_trace` 精简审计；`kind=change_request` 不进 tool loop。
+- **产线**：`agent.config.enable_tools_stages`（默认 `[]`）列出的节点在 json_schema 生成前可选 `maybe_gather_with_tools`；`coverage_check` 不开。
+- **Shell 后端**：`runtime_config.tool_shell_backend=auto` 时 Windows 探测 bash → pwsh；工具名仍为 `bash`。`cli check` 报告探测结果。
+- **配置键**：`tool_bash_timeout_ms`、`tool_max_output_chars`、`tool_agent_max_steps`、`tool_shell_backend`。
+
 ---
 
 ## 5. API 契约
@@ -721,35 +736,36 @@ testerAgent/
 | D14 | 外部调用统一韧性契约：超时/退避重试/限流/结构化修复；检索每步有显式降级链 | 长程任务高频故障源前置收敛；ReMe 能力缺口不阻断开工 | R4/R9/R20 |
 | D15 | 事件先落 task_event 表再广播，SSE 以 Last-Event-ID 补发 | 断线/重启/多标签页可靠回放 | US6 / R12 |
 | D16 | 一期内置最小离线 eval 管线（复用图组件，黄金集冒烟） | 上下文精准策略的任何调优需可度量、可回归 | 2.2 / Q4 / R5 |
+| D17 | 内置工具走 LangChain Tool + LangGraph ToolNode 子图；不替换用例主图 | 与 harness 语义对齐；对话/产线共享运行时；ReMeWriter 不可达 | 内置工具规格 |
 
 ---
 
-## 8. 待验证项（开工前/首期 spike）
+## 8. 待验证项（spike）与一期结论
 
-| # | 事项 | 风险 | 不通过时的预案 |
+| # | 事项 | 状态 | 一期结论 |
 |---|---|---|---|
-| S1 | ReMe SDK 是否支持索引摘要级检索、元数据过滤、条目版本（更新时间/hash）读取 | 决定分层摘要/meta_filter/知识版本实现 | 启用本地索引摘要镜像（只读缓存）方案，不阻塞主流程（§4.3④） |
-| S2 | langgraph-checkpoint-sqlite 对 interrupt_before + 自定义 resume 输入、派生 thread 的支持 | 影响断点续跑与回退实现 | 必要时批次状态以应用层 progress 行为准，checkpointer 仅作节点间续跑 |
-| S3 | 需求文档最大体量下 intake 的处理实测（条款切分质量 + 文件化后上下文占用） | 决定是否需要需求预分块/摘要 | clause 化 + 按需读条款；超大需求给出章节分批确认 |
-| S4 | 索引摘要体量实测（链路/故事总数与 token 量） | 校验 200 条硬上限是否够用 | 超限则 link_identify 改为按需求初筛的二级索引策略 |
-| S5 | 检索成本标定：multi_query/rerank/extract 的调用次数、token、延迟实测（典型 20/40 测试点） | 预算表初始值拍脑袋；影响 Q9 耗时预期 | 按实测固化预算与默认批次大小；成本过高则收紧 query 路数、扩大缓存复用 |
-| S6 | ReMe 写入接口（ReMeWriter）的幂等与失败语义确认 | 影响 kb confirm 的一致性 | 提案侧幂等键 + 写入结果回查；不支持则确认后置为"待人工核对" |
-| S7 | 黄金集（Q4）可获得性与冒烟集构造 | 决定 D16 评测深度 | 无真实集先以 3~5 组手工构造样例建管线，指标仅作回归基线 |
+| S1 | ReMe 三能力（metadata_filter / entry_version / passage_api）与接入模式 | **done** | 优先 HTTP `service`；caps=`(False, False, True)`；启用 IndexMirror + `local_entry_version`（h-sha256）；见 handoff [SP-1]/[WP-09] |
+| S2 | langgraph interrupt / Command(resume) / 派生 thread | **done (GO)** | 走图原生路径；`run_from_stage` 仅预留接口；见 handoff [SP-2] |
+| S3 | 需求最大体量下 intake 实测 | **deferred** | 一期未做真实超大文档实测。已落地：条款化 + 按需读原文；link_identify 需求摘要 N=500 占位。超大需求章节分批确认 → 二期运维标定 |
+| S4 | 索引摘要体量 / 200 条硬上限 | **partial** | 硬上限 + `budget_warning` 已落地；未做真实索引体量实测。超限二级索引策略 → 二期 |
+| S5 | 检索成本标定（20/40 测试点） | **deferred** | 初值发布：`batch_size=5`、`llm_concurrency=4`、runtime_config 预算表、规则分 `type_weights=1.0`。运维期用真实流量标定后固化；Q9 仍开放 |
+| S6 | ReMeWriter 幂等与失败语义 | **done（预案即正式）** | 提案侧 Idempotency-Key + 令牌门禁；写后 read 回查；`verified=False` → `needs_manual_check`；写失败保持 pending 可同键重试 |
+| S7 | 黄金集可获得性 | **done（基线）** | 无真实黄金集；eval smoke 用 3~5 组手工 fixture + FakeReader/FakeLLM；指标仅作回归基线，真实集到位后替换 |
 
 ## 9. 与开放问题的衔接
 
-| PRD 开放问题 | 本文档处理 |
+| PRD 开放问题 | 本文档处理（v0.3 / WP-X2） |
 |---|---|
-| Q1 用例 MD 模板 | 未定，以 `server/prompts` + front-matter + 渲染组件预留；模板确定后落地 |
-| Q2 导出细节 | exporter 先实现 MD zip（按 v 目录），默认导 active 且采纳态；Excel 预留接口 |
-| Q3 采纳率口径 | 统计基数已定为 active 用例最新评审动作；折算细则仍开放 |
-| Q4 黄金集 | 落为 S7 + D16 最小 eval 管线 |
-| Q6 持久化范围 | 已决策，见 D3 / 3.3 |
-| Q7 多智能体预留深度 | 数据模型层 + 图注册层预留，UI 一期不建，见 3.4 / D11 |
-| Q8 模型合规 | 未关闭；本地绑定 127.0.0.1、数据不出第三方 tracing 之外不新增外泄面；合规结论前不开快照外发类功能 |
-| Q9 耗时上限 | 由 S5 成本标定提供实测基线后再定义 |
-| Q11 知识库写入交互 | `/kb/proposals` 两阶段确认 + 一次性令牌 + 幂等（5.6） |
-| Q12 ReMe md 结构约定 | 待 S1 验证后补充适配层映射表 |
+| Q1 用例 MD 模板 | **closed**：detailed-design §4.2 v1 即为一期定稿 |
+| Q2 导出细节 | **closed**：MD zip（INDEX + v 目录）；Excel/CMS → 二期 |
+| Q3 采纳率口径 | 基数已定（active 最新评审）；折算细则仍开放 |
+| Q4 黄金集 | 见 S7；D16 最小 eval 管线已落地 |
+| Q6 持久化范围 | **closed**：D3 / §3.3 |
+| Q7 多智能体预留深度 | **closed**：数据模型 + 图注册预留；UI 一期不建 |
+| Q8 模型合规 | 仍 open；127.0.0.1 绑定；不开快照外发 |
+| Q9 耗时上限 | 仍 open；等 S5 运维标定 |
+| Q11 知识库写入交互 | **closed**：§5.6 两阶段提案；CP1 写库为可选项 |
+| Q12 ReMe md 结构约定 | **closed（适配层）**：SP-1/WP-09 映射表（path / bucket / `chain:*`） |
 
 ---
 

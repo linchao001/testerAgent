@@ -2,11 +2,22 @@
 
 | 项 | 内容 |
 |---|---|
-| 版本 | v1.0 |
-| 日期 | 2026-09-26 |
-| 配套 | [work-breakdown.md](file:///Users/test/Documents/python_project/testerAgent/docs/plan/work-breakdown.md) |
+| 版本 | v1.1 |
+| 日期 | 2026-09-28 |
+| 配套 | [work-breakdown.md](work-breakdown.md) |
 
 > 本文件是跨会话的唯一进度事实源：① 状态表（一眼看清能开哪些包）；② 每包交接记录（下个会话的"记忆"）。每个 WP 收尾必须同时更新两处。
+
+## 0. 范式切换（2026-09-28）
+
+用例智能体主图已从固定五阶段流水线切换为 **Plan-Execute + Reflexion + 子任务评审**（控制环）。
+
+| 项 | 路径 |
+|---|---|
+| 设计 | `docs/superpowers/specs/2026-09-28-plan-execute-reflexion-design.md` |
+| 实现计划 | `docs/superpowers/plans/2026-09-28-plan-execute-reflexion.md` |
+| 状态 | Task 1–11 已落地主干（控制环/门禁/能力工具/子任务/评审提案/API gate_kind/Session 内联确认/场景测/文档同步）；遗留五阶段图经 `build_legacy_stage_graph` / `create_production(legacy=True)` 兼容旧测 |
+| 后续 | 将 capability 接到真实节点函数与 TaskContext；完善 ReviewProposal 前端卡片；同步 detailed-design 全量契约章节 |
 
 ## 1. 状态约定
 
@@ -20,7 +31,7 @@
 
 | 编号 | 名称 | 状态 | 完成日期 | 交接记录锚点 |
 |---|---|---|---|---|
-| SP-1 | ReMe 三能力探测 | todo | | — |
+| SP-1 | ReMe 三能力探测 | done | 2026-09-28 | §3 记录区 [SP-1] |
 | SP-2 | LangGraph interrupt/派生 thread 验证 | done | 2026-09-27 | §3 记录区 [SP-2] |
 
 ### α 后端主线
@@ -35,7 +46,7 @@
 | WP-06 | 异常体系与错误信封 | S | done | 2026-09-26 | §3 记录区 [WP-06] |
 | WP-07 | LLMClient 韧性 | M | done | 2026-09-27 | §3 记录区 [WP-07] |
 | WP-08 | ReMe 契约/FakeReader/IndexMirror | M | done | 2026-09-27 | §3 记录区 [WP-08] |
-| WP-09 | ReMe 真实适配 | M | todo | | — |
+| WP-09 | ReMe 真实适配 | M | done | 2026-09-28 | §3 记录区 [WP-09] |
 | WP-10 | 检索算子 A | M | done | 2026-09-27 | §3 记录区 [WP-10] |
 | WP-11 | 检索算子 B + 缓存 | M | done | 2026-09-27 | §3 记录区 [WP-11] |
 | WP-12 | retrieve_pipeline/trace/snapshot | M | done | 2026-09-27 | §3 记录区 [WP-12] |
@@ -61,23 +72,143 @@
 
 | 编号 | 名称 | 体量 | 状态 | 完成日期 | 交接记录锚点 |
 |---|---|---|---|---|---|
-| WP-F0 | 脚手架/api client/sse.ts | S | todo | | — |
-| WP-F1 | ChatPage | M | todo | | — |
-| WP-F2 | StageConfirmPage | M | todo | | — |
-| WP-F3 | WorkbenchPage | L | todo | | — |
-| WP-F4 | RetrievalDebugPage | M | todo | | — |
-| WP-F5 | Workspaces/Settings + 抛光 | S | todo | | — |
+| WP-F0 | 脚手架/api client/sse.ts | S | done | 2026-09-28 | §3 记录区 [WP-F0] |
+| WP-F1 | ChatPage | M | done | 2026-09-28 | §3 记录区 [WP-F1] |
+| WP-F2 | StageConfirmPage | M | done | 2026-09-28 | §3 记录区 [WP-F2] |
+| WP-F3 | WorkbenchPage | L | done | 2026-09-28 | §3 记录区 [WP-F3] |
+| WP-F4 | RetrievalDebugPage | M | done | 2026-09-28 | §3 记录区 [WP-F4] |
+| WP-F5 | Workspaces/Settings + 抛光 | S | done | 2026-09-28 | §3 记录区 [WP-F5] |
 
 ### δ 收尾
 
 | 编号 | 名称 | 状态 | 完成日期 | 交接记录锚点 |
 |---|---|---|---|---|
-| WP-X1 | E2E + 场景 8/9 | todo | | — |
-| WP-X2 | 收尾发布与文档回灌 | todo | | — |
+| WP-X1 | E2E + 场景 8/9 | done | 2026-09-28 | §3 记录区 [WP-X1] |
+| WP-X2 | 收尾发布与文档回灌 | done | 2026-09-28 | §3 记录区 [WP-X2] |
 
 ## 3. 交接记录（按完成顺序倒序追加，最新在最上）
 
 <!-- 记录区开始：新记录插入到本行下方 -->
+
+### [WP-X2] 收尾发布与文档回灌 — done（2026-09-28）
+
+- 状态：done
+- 交付物：
+  - backup CLI：`store/backup.py` + `cli backup <out_dir>`（SQLite online backup + workspaces/ 打包）；`tests/test_backup_cli.py`
+  - 导出+提案+保留期发布门禁：`tests/test_release_x2.py`
+  - **bugfix**：`FileStore.cleanup_exports` 误扫 `*/tasks/*`，改为 `workspaces/{ws}/{task}/exports`（与 `_task_dir` 对齐）；`test_maintenance_cleanup` 路径同步
+  - 文档回灌：PRD v0.7（Q1/Q2/Q6/Q7/Q11/Q12 closed）、tech-design v0.3（S1~S7 结论）、detailed-design v0.3（Q1/Q2 定稿、§19.5 接线）
+  - 根 `README.md` + `docs/plan/release-checklist.md`
+- 验收：`pytest -p no:zframe tests/test_backup_cli.py tests/test_release_x2.py tests/test_maintenance_cleanup.py` **12 passed**
+- 与设计偏离：① S3/S4/S5 **未做真实环境标定**（结论记 deferred/partial，初值发布）；② cli `reap` 仍占位（启动 lifespan 已跑 Reaper/对账/清理）；③ obsolete 用例 MD 物理删除仍未单独实现（`obsolete_cases_days` 现用于 `.tmp` 清理口径，与 WP-29 一致）
+- 遗留：真实 ReMe/LLM 联调；Playwright 全主场景；runtime_config UI；Q3/Q8/Q9/Q10；S3~S5 运维标定
+- 下个包起步点：**无后续 WP**——按 [release-checklist.md](release-checklist.md) 勾选后候选发布；联调/标定属运维迭代
+
+### [WP-X1] E2E + 场景 8/9 — done（2026-09-28）
+
+- 状态：done
+- 交付物：
+  - 场景 8/9：`server/tests/test_scenario_8_9.py`（镜像本地过滤 + rerank `llm_failed→rule_score`；`close_retrieval_trace` hallucinated / injected_not_used）
+  - API E2E：`server/tests/test_e2e_main.py`（ASGI+假图节点：需求→CP1→CP2→评审→导出；回退继承；failed+progress→/run 续跑）
+  - Playwright opt-in：`web/e2e/smoke.spec.ts` + `playwright.config.ts`；`npm run e2e`（不入 `npm test`/PR）；浏览器 MSW 合入 confirm/workbench/debug/settings；`public/mockServiceWorker.js`
+- 验收：`pytest -p no:zframe tests/test_scenario_8_9.py tests/test_e2e_main.py` **5 passed**；前端 `npm test` **38 passed**；`npm run e2e` **3 passed**
+- 与设计偏离：① **主路径/回退/崩溃 E2E 落在 ASGI API 层**（非 Playwright 打真后端；对齐已确认设计）；② Playwright 仅 UI smoke（壳导航+会话+设置+工作区），不覆盖真实 SSE/LLM；③ 场景 8 用 `link_identify`+链路索引条目（镜像只收录 LINK/STORY，业务条目进 scope 会被 `filtered_scope`，无法同时覆盖 rerank 降级）
+- 遗留：真实 ReMe/LLM 联调；Playwright 全主场景；WP-X2 文档回灌；runtime_config UI
+- 下个包起步点：**WP-X2 收尾发布与文档回灌**
+
+### [WP-F5] Workspaces/Settings + 抛光 — done（2026-09-28）
+
+- 状态：done
+- 交付物：`api/domain.ts` KbConfig/KbTestOut/Agent/ModelConfig/ModelTestOut；`endpoints` workspace CRUD+kb/test、agents list/bind、model GET/PUT/test；`components/settings/CapsReadonly`；`pages/WorkspacesPage`（列表选中=当前会话区、表单、kb/test 能力位只读、智能体勾选绑定、删除 409）；`pages/SettingsPage`（保存后 model/test）；MSW `mocks/settingsHandlers.ts`；路由替换占位；Chat 无工作区引导链 `/workspaces`（不再静默建默认区）
+- 验收：前端 `npm test` **38 passed**（F0~F4 + F5：kb/test 能力位三勾选 disabled+passage_api 勾选 / 创建工作区写 session+绑定智能体 / DELETE 活跃任务 ErrorBanner TASK_STATE_CONFLICT / model save→test latency+model）；`npm run build` 成功
+- 与设计偏离：① **仍未引 TanStack Query**（与 F1~F4 一致）；② **智能体不可解绑**（后端无 unbind HTTP，已绑定 checkbox disabled）；③ **runtime_config 高级设置未做**（本包仅 model_config）；④ KB tree 仍未做（明确留给后续）
+- 遗留：真实联调需 ReMe service + 已保存 model；Chat 空工作区需先走工作区页；unbind API 若需要再补
+- 下个包起步点：**WP-X1 E2E + 场景 8/9**（或真实后端联调走通主场景）
+
+### [WP-F4] RetrievalDebugPage — done（2026-09-28）
+
+- 状态：done
+- 交付物：`api/domain.ts` Trace*/Snapshot*/Playground*/Funnel*；`listTraces`/`getTrace`/`listSnapshots`/`getSnapshot`/`getSnapshotItem`/`runPlayground`；`lib/funnel.ts`；`components/debug/{FunnelChart,TraceTree,SnapshotList,SnapshotItemDialog,Playground}`；`pages/RetrievalDebugPage.tsx`；MSW `mocks/debugHandlers.ts`；路由 `/debug`
+- 验收：前端 `npm test` **34 passed**（含 F4：漏斗四段 4/3/2/2 + candidates drop_reason；full 快照弹窗正文 / meta 档黄标禁用；trace degraded 黄标；Playground 提交 funnel+degraded）；`npm run build` 成功
+- 与设计偏离：① **漏斗用 CSS 条**（未引图表库）；② **仍未引 TanStack Query**；③ Playground overrides UI 未暴露（API 可传，本包固定空）；④ KB tree 未做（属 F5/后续）
+- 遗留：真实联调需任务已跑出 traces/snapshots；meta/off 档全文 404 由 UI 禁点处理
+- 下个包起步点：**WP-F5 Workspaces/Settings + 抛光**（kb/test 能力位只读、model/test；联调 WP-25）
+
+### [WP-F3] WorkbenchPage — done（2026-09-28）
+
+- 状态：done
+- 交付物：`api/domain.ts` CaseSummary/CaseDetail/Review*；`listCases`/`getCase`/`updateCase`(If-Match)/`reviewCases`；`components/case/{CaseList,MdViewer,MdEditor,ReviewBar,AdoptionSummary,ConflictBanner}`；`lib/adoption.ts`；`pages/WorkbenchPage.tsx`（三栏+评审过滤/版本切换+编辑抽屉+冲突红条）；MSW `mocks/workbenchHandlers.ts`；路由 `/workbench`；依赖 `react-markdown`
+- 验收：前端 `npm test` **29 passed**（F0~F2 + F3：If-Match 保存→edited_adopted / VERSION_CONFLICT 提示 expected·current 并刷新正文 / 批量 adopt 后采纳率 0/4→2/4）；`npm run build` 成功
+- 与设计偏离：① **MdEditor 用 textarea**（未引 CodeMirror，A 范围够用）；② **仍未引 TanStack Query**（与 F1/F2 一致）；③ **VERSION_CONFLICT「diff」展示 expected/current hash**（后端 details 无正文 diff）；④ 导出/regenerate/覆盖矩阵按范围 A 未做
+- 遗留：真实联调需任务已生成用例；file_missing 仅禁保存+提示，无后端重建入口；hash_conflict「覆盖文件」先 GET 再 PUT
+- 下个包起步点：**WP-F4 RetrievalDebugPage**（漏斗/轨迹/快照偏移全文/Playground；联调 WP-28）
+
+### [WP-F2] StageConfirmPage — done（2026-09-28）
+
+- 状态：done
+- 交付物：后端 `GET /api/v1/artifacts/{id}`（`api/tasks.py` ArtifactDetailOut，含完整 payload）；前端 `api/domain.ts` LinkPlan/PointPlan/ArtifactDetail；`getArtifact`/`confirmTask`；`components/confirm/{LinkPlanEditor,PointPlanEditor}`；`pages/StageConfirmPage.tsx`（左清单右详情、hit/new 分色、confidence<0.5 置灰、脏改 modify / 干净 confirm、VERSION_CONFLICT 刷新提示、CP2→链路 ImpactPreview 回退）；MSW `mocks/confirmHandlers.ts`；路由 `/confirm`
+- 验收：后端 `pytest tests/test_api_artifact_get.py` **2 passed**；前端 `npm test` **25 passed**（F0/F1 + F2：干净 confirm / 脏改 modify+expected_version / VERSION_CONFLICT 提示并刷新）；`npm run build` 成功
+- 与设计偏离：① **新增 GET /artifacts/{id}**（dd/tech-design 端点表未列；TaskOut.active_artifacts 无 payload，确认页必需）；② **hit=false 绑定 entry_id 用文本框**（完整 KB 树选择器留给后续）；③ **仍未引 TanStack Query**（与 F1 一致，显式 load）
+- 遗留：真实联调需后端已起 + 任务停在 waiting_confirm；KB 树选择器 / 写库提案不在本包
+- 下个包起步点：**WP-F3 WorkbenchPage**（用例列表/MD 渲染编辑/评审条/版本过滤；联调 WP-27）
+
+### [WP-F1] ChatPage — done（2026-09-28）
+
+- 状态：done
+- 交付物：`api/domain.ts` + `api/endpoints.ts`（F1 所需 REST 子集）；Zustand `stores/session.ts` / `stores/taskStream.ts`（SSE→phase/checkpoint/clarification）；`lib/parseStageMention.ts`（@链路/@测试点）；组件 `chat/{RequirementInput,MessageList,ClarificationCard}` + `confirm/ImpactPreview`；`pages/ChatPage.tsx`（引导建工作区/会话→需求提交建任务自动 run→订阅→澄清卡 answer→checkpoint 横幅链确认页；change_request 二次确认后 rollback）；MSW `mocks/chatHandlers.ts` + `test/scriptedEventSource.ts`；路由 `/` 挂 ChatPage
+- 验收：`npm test` **22 passed**（F0 14 + F1 新增：parseStageMention / taskStream 事件归一 / ChatPage 脚本事件→checkpoint_waiting 横幅、澄清卡提交、@链路 ImpactPreview→rollback）；`npm run build` 成功
+- 与设计偏离：① **未引 TanStack Query**（F1 消息/任务用本地 state + 显式 refresh，F2/F3 列表页再引）；② **ImpactPreview 预确认为静态风险说明**（无独立 analyze_impact API，真实 summary 在 rollback 响应后展示）；③ 中文 @别名不用 `\b`（JS `\w` 不含汉字）
+- 遗留：真实后端联调需 `VITE_ENABLE_MSW=0` + 后端已起且已有工作区；StageConfirmPage（F2）消费 checkpoint 横幅跳转；composer 的普通 chat 消息后端暂只落库不编排（WP-25 遗留）
+- 下个包起步点：**WP-F2 StageConfirmPage**（Link/Point 清单编辑器 + expected_version confirm/modify + VERSION_CONFLICT；复用 ImpactPreview；联调 WP-24/26）
+
+### [WP-F0] 脚手架/api client/sse.ts — done（2026-09-28）
+
+- 状态：done
+- 交付物：新建 `web/`（Vite + React 19 + TS + Tailwind v4 + react-router）；`api/client.ts`（错误信封解包/中文映射/分页/`Idempotency-Key`/NetworkError）；`api/sse.ts`（`after_event_id` + localStorage lastEventId + 退避 1/2/5…30s + 未知事件忽略）；`AppShell`（顶栏占位导航 + ErrorBanner + ReconnectBanner）；六页占位；dev-only `/_dev/f0` + MSW handlers；Vitest 14 例；dev 代理 `/api`→`:8080`
+- 验收：`npm test` **14 passed**；`npm run build` 成功。覆盖：400/404/500 信封中文码、分页、幂等头、网络失败文案、SSE 退避与 after_event_id 续传、ErrorBanner 展示 `[VALIDATION_BODY]`、黄条「连接中断，重连中…」
+- 与设计偏离：① **React 19**（dd §12.1 写 18，create-vite 默认 19，API 兼容）；② **未装 TanStack Query/Zustand**（F0 用最小 subscribe store；F1+ 再引）；③ 生产包不含 `/_dev/f0`（`import.meta.env.DEV` 守卫）
+- 遗留：真实后端联调需 `VITE_ENABLE_MSW=0` + 后端已起；视觉体系留给后续页面 WP
+- 下个包起步点：**WP-F1 ChatPage**（需求输入/建任务自动 run/澄清卡/change_request；联调 WP-26 已就绪）
+
+### [WP-09] ReMe 真实适配 — done（2026-09-28）
+
+- 状态：done（依赖 SP-1 done）
+- 交付物：新建 [adapters/reme_http.py](file:///D:/code/github/testerAgent/server/tester_agent/adapters/reme_http.py)——`HttpReMeReader`（`POST /knowledge_search|/read|/frontmatter_read|/list`）、`HttpReMeWriter`（`/save_to_knowledge` + `/read` 回查）、`WorkspaceRoutingWriter`（按工作区 `kb_config` 路由）、`register_service_builder` / `bucket_to_entry_type` / `build_http_reader`（构造期 list 探活）；caps 固定 SP-1 `(metadata_filter=False, entry_version=False, passage_api=True)`；`entry_id`=相对 path；IndexTree 由 `signals` 中 `chain:*` 派生；[main.py](file:///D:/code/github/testerAgent/server/tester_agent/main.py) lifespan 注册 `service` builder + `kb_writer=WorkspaceRoutingWriter(db)`；[api/kb.py](file:///D:/code/github/testerAgent/server/tester_agent/api/kb.py) confirm 向 payload 注入 `_workspace_id`；新增 tests/test_reme_http.py（15 用例）
+- 验收：`pytest tests/test_reme_http.py tests/test_reme.py tests/test_api_d.py tests/test_api_a.py` **133 passed**。覆盖 search 映射 / types·scope 不传远端 / 网络→KbUnreachable / get_entry frontmatter+chain / 缺失 404 / IndexTree 双 story / Factory probe caps / Writer 成功 verified + 拒绝 ok=False + 网络抛错；既有 Factory 未注册 sdk 行为与场景 12 import-linter 仍绿
+- 与设计偏离：① **优先 service 而非 SDK**（SP-1）；② **sdk mode 本包不注册**（仍 400 VALIDATION_BODY）；③ IndexTree 无原生 API，靠 `chain:*` 派生（Q12 仍 open，缺标记→空树+镜像降级）；④ confirm 注入 `_workspace_id` 不扩 Writer Protocol 形参
+- 遗留：未对真实 ReMe 进程做联通（需本机 `reme start config=business_kb` + kb/test）；`TestTaskAnswer`/`test_cleanup_ignores_fresh_tmp` 偶发失败与本包无关（时序/mtime）
+- 下个包起步点：γ 前端 WP-F0，或联调真实 ReMe 探活回填 Q12
+
+### [SP-1] ReMe 三能力探测 — done（2026-09-28）
+
+- 探测源：`D:\code\github\ReMe` 分支 `feature/linchao`（只读源码；未起本地服务、未改生产代码）
+- 接入模式结论：**优先 `service`（HTTP）**，`sdk` 作可选二路
+  - HTTP：`HttpService` 将每个 job 挂为 `POST /{job.name}`（JSON）；客户端 `HttpClient` → `http://{host}:{port}/{action}`。业务 KB 配置见 `config/business_kb.yaml` / `personal_with_kb.yaml`（默认端口 **8182**，`knowledge_base_id` 默认 `zhb_kb`）
+  - SDK：同进程 `ReMe`/`Application` + `await app.run_job(name, **kwargs)`，与 HTTP 共用 job 面；但依赖 `reme-ai[core]`（agentscope/faiss/zvec 等）重，且占用索引/监听生命周期——不适合作 testerAgent 默认嵌入
+  - kb_config 约定（解锁 WP-09）：`mode=service` 时 `target=base_url`（如 `http://127.0.0.1:8182`），`kb_id` 对齐远端 `knowledge_base_id`；`options` 可留 timeout/bucket 默认等
+- 三能力位结论（相对 dd §8.4）：
+
+  | 能力 | 结论 | 依据 | WP-09 预案 |
+  |---|---|---|---|
+  | `metadata_filter` | **否**（相对 dd 语义） | `search`/`knowledge_search` 支持 `search_filter.prefixes`（→ bucket 路径前缀）与 path/日期；**默认** `include_frontmatter_in_metadata: false`，chunk 不带 frontmatter；**无** `types[]` / `scope={link_ids,story_ids}` 原生参数 | `caps.metadata_filter=False` → 启用 **IndexMirror 本地过滤**；类型可另做 bucket→EntryType 粗映射作可选增强，但不标能力位为真 |
+  | `entry_version` | **弱有 / 标 False** | 节点 frontmatter 有 `updated_at`（ISO）；KB.md 有整库 `version:int`；`FileNode.st_mtime` 存在；search 结果 `FileChunk` **不**带版本/hash；无内容 hash API | `caps.entry_version=False` → **`local_entry_version`（h-sha256 前12）**；`get_entry` 仍把 `updated_at` 填入 `Entry.updated_at`/`raw` 供面板展示 |
+  | `passage_api` | **是** | `knowledge_search`/`search` 默认 **chunk 级**召回（path + start_line/end_line + text）；`node_search` 为实体级无正文（盘点用） | `caps.passage_api=True`；passage_extract 可直接消费 chunk 文本，少走全量 get_entry |
+
+- 读路径映射（→ `ReMeReader`）：
+  - `search` ← `POST /knowledge_search`（`query`,`limit`,`bucket`）；hits = `metadata.results[]`（FileChunk dump）
+  - `get_entry` ← `POST /read`（path）+ 必要时 `POST /frontmatter_read`
+  - `list_index_tree` ← **无原生 API**；须适配层扫描 `knowledge/` + frontmatter（`name`/`description`/`signals` 中 `chain:*`）或解析链路树 md 派生 `IndexTree`（补 Q12）
+- 写路径映射（→ `ReMeWriter`）：
+  - `write_proposal` ← `POST /save_to_knowledge`（`title`,`content`,`bucket`,…）；合并侧有 `expected_updated_at` 乐观并发（stale→inbox），**无**一次性令牌语义——令牌仍由 testerAgent confirm 端门禁，远端只做写入
+  - 回查：`read`/`frontmatter_read` → `WriteResult.verified`
+- Entry / 类型映射草案（WP-09 落表）：
+  - `entry_id` = workspace 相对 path（稳定、可 round-trip 到 `read`）
+  - `entry_type` ← bucket：`business/{wiki,procedure,personal}`→`business`；`business/openapi`→`api`；`business/dbInfo`→`db`；`test/defects`→`defect`；`test/{test_cases,test_design,test_data}`→`flow_case`；索引派生节点→`link_index`
+  - `link_id`/`story_id` ← frontmatter `signals` 的 `chain:<中文标题>`（kb-chain-tag 约定）；无标记则空，靠 IndexMirror 降级
+- 与设计偏离/缺口：① IndexTree 无服务端接口（Q12）；② dd `types`/`scope` 与 ReMe `bucket`/`prefixes` 不等价；③ 默认不把 frontmatter 打进 chunk metadata，不能指望服务端按 `chain:` 过滤；④ SDK 非首选（与 dd「S1 前优先 SDK」原文相反——以本探测为准）
+- 验收：一页结论已写入本交接单；不通过项均挂 §8.4 预案（镜像 / 本地 hash / chunk 直用）
+- 遗留：本地未起 ReMe 服务做联通实测（源码级结论）；WP-09 实现后用 `POST /workspaces/{id}/kb/test` 做真实探活
+- 下个包起步点：**WP-09**（`adapters/reme_http.py` 主实现 + Factory `register("service", …)`；可选 stub/sdk；Writer 替换 `UnavailableWriter`；caps 按上表硬编码/探测；IndexTree 派生逻辑）
 
 ### [WP-28] API-D 调试/知识库提案 — done（2026-09-28）
 
@@ -363,7 +494,7 @@
 
 | 日期 | 来源 WP | 类型 | 问题 | 建议方案 | 状态 | 裁决 |
 |---|---|---|---|---|---|---|
-| — | — | — | （暂无） | — | — | — |
+| 2026-09-28 | SP-1 | design | Q12：ReMe 无原生 IndexTree；链路/故事靠 `signals.chain:*` 或链路树 md 派生 | WP-09 适配层扫描 frontmatter/`td-链路树` 派生 IndexTree；缺标记则空树+镜像降级 | ~~closed~~ | WP-X2：PRD/tech-design 按适配层映射关闭；无原生 API 风险由镜像降级承接 |
 
 ## 6. 使用示例
 
