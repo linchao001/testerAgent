@@ -1,7 +1,7 @@
-"""主图业务节点（dd §7.5 关键节点处理逻辑；WP-16~20 逐阶段交付）。
+"""主图业务节点（dd §7.5；能力函数由控制环 ``invoke_capability`` 调度）。
 
-节点函数契约（WP-15 定）：``(ctx: TaskContext, state: TaskState) -> 状态增量
-dict``；由 graph.wrap 包装后注入 build_graph(nodes={stage: node_fn})。
+节点函数契约：``(ctx: TaskContext, state: TaskState) -> 状态增量 dict``；
+单测可用 ``wrap`` 灌入小图，生产路径经 ``caps`` / ``default_nodes``。
 """
 
 from .intake import ClauseSpan, intake_node, split_clauses

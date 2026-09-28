@@ -371,15 +371,11 @@ def _default_nodes(capture: dict | None = None):
     async def case_gen(ctx, state):
         return {}
 
-    async def coverage(ctx, state):
-        return {}
-
     return {
         STAGE_INTAKE: intake,
         STAGE_LINK_IDENTIFY: link,
         STAGE_POINT_WRITE: point,
         STAGE_CASE_GENERATE: case_gen,
-        "coverage_check": coverage,
     }
 
 

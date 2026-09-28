@@ -13,30 +13,10 @@ from typing import Any
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from .constants import (
-    STAGE_CASE_GENERATE,
-    STAGE_INTAKE,
-    STAGE_LINK_IDENTIFY,
-    STAGE_POINT_WRITE,
-)
 from .control.graph import build_control_graph
-from .nodes import (
-    case_generate_node,
-    intake_node,
-    link_identify_node,
-    point_write_node,
-)
 from .wrap import NodeFn
 
 CASE_DESIGNER = "case_designer"
-
-#: 阶段名 → 节点函数（能力包装 / 测试 caps 组装）
-PRODUCTION_NODES: dict[str, NodeFn] = {
-    STAGE_INTAKE: intake_node,
-    STAGE_LINK_IDENTIFY: link_identify_node,
-    STAGE_POINT_WRITE: point_write_node,
-    STAGE_CASE_GENERATE: case_generate_node,
-}
 
 
 class GraphRegistry:

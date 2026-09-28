@@ -16,12 +16,3 @@ def build_quality_proposal(*, case_issues: list[dict]) -> ReviewProposal:
         for issue in case_issues
     ]
     return ReviewProposal(scope="quality", items=items)
-
-
-async def run_review_quality(*, case_issues: list[dict] | None = None) -> dict:
-    proposal = build_quality_proposal(case_issues=list(case_issues or []))
-    return {
-        "summary": f"quality review: {len(proposal.items)} items",
-        "proposal": proposal.model_dump(),
-        "output_ref": "art-review-quality",
-    }

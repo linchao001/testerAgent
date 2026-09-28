@@ -40,3 +40,6 @@ coverage.xml
 # Local env / data
 .env
 data/
+
+# Temp wire-test DBs (pytest / local harness)
+server/.tmp-wire-test*/

@@ -13,9 +13,10 @@ from .constants import (
     STAGE_COVERAGE_CHECK,
     STAGE_INTAKE,
     STAGE_LINK_IDENTIFY,
+    STAGE_NODES,
     STAGE_POINT_WRITE,
 )
-from .main_graph import STAGE_NODES, build_graph
+from .main_graph import build_graph
 from .state import TaskState
 from .wrap import CTX_KEY, NodeFn, wrap
 

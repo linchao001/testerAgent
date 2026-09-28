@@ -17,12 +17,3 @@ def build_adoption_proposal(*, cases: list[dict]) -> ReviewProposal:
         if str(c.get("review_status") or "pending") == "pending"
     ]
     return ReviewProposal(scope="adoption", items=items)
-
-
-async def run_review_adoption(*, cases: list[dict] | None = None) -> dict:
-    proposal = build_adoption_proposal(cases=list(cases or []))
-    return {
-        "summary": f"adoption review: {len(proposal.items)} items",
-        "proposal": proposal.model_dump(),
-        "output_ref": "art-review-adoption",
-    }

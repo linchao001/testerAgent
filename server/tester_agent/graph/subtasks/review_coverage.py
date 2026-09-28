@@ -26,16 +26,3 @@ def build_coverage_proposal(
         matrix_ref=matrix_ref,
         degraded=degraded or bool(uncovered_clause_ids),
     )
-
-
-async def run_review_coverage(*, uncovered_clause_ids: list[str], matrix_ref: str | None = None) -> dict:
-    """Subtask entry: return proposal payload + output_ref placeholder."""
-    proposal = build_coverage_proposal(
-        uncovered_clause_ids=uncovered_clause_ids,
-        matrix_ref=matrix_ref,
-    )
-    return {
-        "summary": f"coverage review: {len(proposal.items)} items",
-        "proposal": proposal.model_dump(),
-        "output_ref": matrix_ref or "art-review-coverage",
-    }

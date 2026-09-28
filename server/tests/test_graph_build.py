@@ -13,8 +13,9 @@ from langgraph.types import Command, interrupt
 
 from tester_agent.domain import PlanStepKind
 from tester_agent.errors import AppError, TaskCancelled, ValidationError
+from tester_agent.graph.constants import STAGE_NODES
 from tester_agent.graph.control.graph import build_control_graph
-from tester_agent.graph.main_graph import STAGE_NODES, build_graph
+from tester_agent.graph.main_graph import build_graph
 from tester_agent.graph.state import TaskState
 from tester_agent.graph.wrap import wrap
 from tester_agent.runtime.context import AppContext, TaskContext

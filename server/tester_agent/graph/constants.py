@@ -16,6 +16,15 @@ STAGE_CASE_GENERATE = "case_generate"
 STAGE_COVERAGE_CHECK = "coverage_check"
 STAGE_REVIEW_EXPORT = "review_export"
 
+#: 能力阶段名（控制环 dispatch；coverage_check 仍为可调用节点，一期未进默认 plan）
+STAGE_NODES: tuple[str, ...] = (
+    STAGE_INTAKE,
+    STAGE_LINK_IDENTIFY,
+    STAGE_POINT_WRITE,
+    STAGE_CASE_GENERATE,
+    STAGE_COVERAGE_CHECK,
+)
+
 BATCH_DEFAULT_SIZE = 5
 HEARTBEAT_INTERVAL_SEC = 10
 HEARTBEAT_STALE_SEC    = 120

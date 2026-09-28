@@ -4,27 +4,32 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Callable, Mapping
 
 from langchain_core.tools import StructuredTool
 
 from ..domain import PlanStepKind
-
-NodeFn = Callable[..., Awaitable[dict[str, Any]]]
+from ..graph.constants import (
+    STAGE_CASE_GENERATE,
+    STAGE_INTAKE,
+    STAGE_LINK_IDENTIFY,
+    STAGE_POINT_WRITE,
+)
+from ..graph.wrap import NodeFn
 
 # PlanStep.kind → stage_artifact.stage / get_active lookup key
 KIND_TO_STAGE: dict[PlanStepKind, str] = {
-    PlanStepKind.COVERAGE_DESIGN: "link_identify",
-    PlanStepKind.POINT_DESIGN: "point_write",
-    PlanStepKind.CASE_GENERATE: "case_generate",
-    PlanStepKind.REPAIR: "case_generate",
+    PlanStepKind.COVERAGE_DESIGN: STAGE_LINK_IDENTIFY,
+    PlanStepKind.POINT_DESIGN: STAGE_POINT_WRITE,
+    PlanStepKind.CASE_GENERATE: STAGE_CASE_GENERATE,
+    PlanStepKind.REPAIR: STAGE_CASE_GENERATE,
 }
 
 STAGE_TO_KIND: dict[str, PlanStepKind] = {
-    "intake": PlanStepKind.INTAKE_PARSE,
-    "link_identify": PlanStepKind.COVERAGE_DESIGN,
-    "point_write": PlanStepKind.POINT_DESIGN,
-    "case_generate": PlanStepKind.CASE_GENERATE,
+    STAGE_INTAKE: PlanStepKind.INTAKE_PARSE,
+    STAGE_LINK_IDENTIFY: PlanStepKind.COVERAGE_DESIGN,
+    STAGE_POINT_WRITE: PlanStepKind.POINT_DESIGN,
+    STAGE_CASE_GENERATE: PlanStepKind.CASE_GENERATE,
 }
 
 
@@ -36,6 +41,7 @@ def caps_from_stage_nodes(nodes: Mapping[str, NodeFn]) -> dict[PlanStepKind, Nod
         if kind is not None:
             out[kind] = fn
     return out
+
 
 # Control-loop artifact.kind labels (spec §5.1)
 KIND_TO_ARTIFACT_KIND: dict[PlanStepKind, str] = {
@@ -106,14 +112,17 @@ def default_nodes() -> dict[PlanStepKind, NodeFn]:
     from ..graph.nodes.link_identify import link_identify_node
     from ..graph.nodes.point_write import point_write_node
 
-    return {
-        PlanStepKind.INTAKE_PARSE: intake_node,
-        PlanStepKind.COVERAGE_DESIGN: link_identify_node,
-        PlanStepKind.POINT_DESIGN: point_write_node,
-        PlanStepKind.CASE_GENERATE: case_generate_node,
-        # repair reuses case_generate path until dedicated repair exists
-        PlanStepKind.REPAIR: case_generate_node,
-    }
+    caps = caps_from_stage_nodes(
+        {
+            STAGE_INTAKE: intake_node,
+            STAGE_LINK_IDENTIFY: link_identify_node,
+            STAGE_POINT_WRITE: point_write_node,
+            STAGE_CASE_GENERATE: case_generate_node,
+        }
+    )
+    # repair reuses case_generate path until dedicated repair exists
+    caps[PlanStepKind.REPAIR] = case_generate_node
+    return caps
 
 
 def _payload_from_increment(kind: PlanStepKind, increment: dict[str, Any]) -> Any:
@@ -250,30 +259,3 @@ def make_capability_tools(*, runner: Callable[..., Any] | None = None) -> list:
             func=lambda kind, payload_json: _art_id(f"write-{kind}"),
         ),
     ]
-
-
-#: PlanStep.kind → capability tool name for direct dispatch
-KIND_TO_CAPABILITY: dict[PlanStepKind, str] = {
-    PlanStepKind.INTAKE_PARSE: "run_intake_parse",
-    PlanStepKind.COVERAGE_DESIGN: "run_coverage_design",
-    PlanStepKind.POINT_DESIGN: "run_point_design",
-    PlanStepKind.CASE_GENERATE: "generate_cases_batch",
-    PlanStepKind.REPAIR: "write_artifact",
-}
-
-
-def dispatch_capability(kind: PlanStepKind, *, tools: list | None = None) -> str:
-    """Sync stub dispatch (no TaskContext); prefer :func:`invoke_capability` in control loop."""
-    tool_list = tools if tools is not None else make_capability_tools()
-    by_name = {t.name: t for t in tool_list}
-    name = KIND_TO_CAPABILITY.get(kind)
-    if name is None:
-        return _art_id(kind.value)
-    tool = by_name.get(name)
-    if tool is None:
-        return _art_id(kind.value)
-    if kind == PlanStepKind.CASE_GENERATE:
-        return tool.invoke({"point_ids": []})
-    if kind == PlanStepKind.REPAIR:
-        return tool.invoke({"kind": "repair", "payload_json": "{}"})
-    return tool.invoke({})

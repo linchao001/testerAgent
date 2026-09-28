@@ -11,25 +11,11 @@ from typing import Any
 
 from langgraph.graph.state import CompiledStateGraph
 
+from .constants import STAGE_NODES
 from .control.graph import build_control_graph
 from .wrap import NodeFn
 
-# 阶段名常量仍导出，供 DAO/产物 stage 字段与能力映射使用
-from .constants import (
-    STAGE_CASE_GENERATE,
-    STAGE_COVERAGE_CHECK,
-    STAGE_INTAKE,
-    STAGE_LINK_IDENTIFY,
-    STAGE_POINT_WRITE,
-)
-
-STAGE_NODES: tuple[str, ...] = (
-    STAGE_INTAKE,
-    STAGE_LINK_IDENTIFY,
-    STAGE_POINT_WRITE,
-    STAGE_CASE_GENERATE,
-    STAGE_COVERAGE_CHECK,
-)
+__all__ = ["STAGE_NODES", "build_graph"]
 
 
 def build_graph(

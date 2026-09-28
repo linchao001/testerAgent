@@ -9,7 +9,7 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
-from ...domain import AgentPlan, PlanStep, PlanStepKind
+from ...domain import AgentPlan, PlanStep, PlanStepKind, ReviewProposal
 from ...tools.capabilities import invoke_capability, legacy_state_from_artifact
 from .gates import gate_enabled
 from .reflect import decide_reflection
@@ -124,6 +124,49 @@ def _ctx_from_config(config: RunnableConfig | None) -> Any | None:
     return configurable.get("ctx")
 
 
+def _store_review_artifact(
+    step: PlanStep,
+    artifacts: dict[str, Any],
+    proposal: ReviewProposal,
+    *,
+    id_prefix: str,
+) -> None:
+    """Attach a review_proposal artifact and mark the step done."""
+    art_id = step.output_ref or f"{id_prefix}-{uuid.uuid4().hex[:8]}"
+    artifacts[art_id] = {
+        "kind": "review_proposal",
+        "version": 1,
+        "payload_ref": art_id,
+        "confirmed_by": None,
+        "payload": proposal.model_dump(),
+    }
+    step.output_ref = art_id
+    step.status = "done"
+
+
+def _build_review_proposal(
+    step: PlanStep,
+) -> tuple[ReviewProposal, str] | None:
+    """Return (proposal, id_prefix) for review kinds; None for capability steps."""
+    from ..subtasks.review_adoption import build_adoption_proposal
+    from ..subtasks.review_coverage import build_coverage_proposal
+    from ..subtasks.review_quality import build_quality_proposal
+
+    if step.kind == PlanStepKind.REVIEW_COVERAGE:
+        return (
+            build_coverage_proposal(
+                uncovered_clause_ids=list(step.input_refs or []),
+                matrix_ref=None,
+            ),
+            "art-review-cov",
+        )
+    if step.kind == PlanStepKind.REVIEW_QUALITY:
+        return build_quality_proposal(case_issues=[]), "art-review-qual"
+    if step.kind == PlanStepKind.REVIEW_ADOPTION:
+        return build_adoption_proposal(cases=[]), "art-review-ad"
+    return None
+
+
 async def execute_step_node(
     state: dict,
     config: RunnableConfig | None = None,
@@ -131,10 +174,6 @@ async def execute_step_node(
     nodes: dict | None = None,
 ) -> dict[str, Any]:
     """Execute current step via real stage nodes (or stub without TaskContext)."""
-    from ..subtasks.review_adoption import build_adoption_proposal
-    from ..subtasks.review_coverage import build_coverage_proposal
-    from ..subtasks.review_quality import build_quality_proposal
-
     plan = AgentPlan.model_validate(state["agent_plan"])
     cursor = state.get("plan_cursor")
     artifacts = dict(state.get("artifacts") or {})
@@ -148,45 +187,10 @@ async def execute_step_node(
             continue
         if step.status not in ("pending", "running"):
             break
-        if step.kind == PlanStepKind.REVIEW_COVERAGE:
-            proposal = build_coverage_proposal(
-                uncovered_clause_ids=list(step.input_refs or []),
-                matrix_ref=None,
-            )
-            art_id = step.output_ref or f"art-review-cov-{uuid.uuid4().hex[:8]}"
-            artifacts[art_id] = {
-                "kind": "review_proposal",
-                "version": 1,
-                "payload_ref": art_id,
-                "confirmed_by": None,
-                "payload": proposal.model_dump(),
-            }
-            step.output_ref = art_id
-            step.status = "done"
-        elif step.kind == PlanStepKind.REVIEW_QUALITY:
-            proposal = build_quality_proposal(case_issues=[])
-            art_id = step.output_ref or f"art-review-qual-{uuid.uuid4().hex[:8]}"
-            artifacts[art_id] = {
-                "kind": "review_proposal",
-                "version": 1,
-                "payload_ref": art_id,
-                "confirmed_by": None,
-                "payload": proposal.model_dump(),
-            }
-            step.output_ref = art_id
-            step.status = "done"
-        elif step.kind == PlanStepKind.REVIEW_ADOPTION:
-            proposal = build_adoption_proposal(cases=[])
-            art_id = step.output_ref or f"art-review-ad-{uuid.uuid4().hex[:8]}"
-            artifacts[art_id] = {
-                "kind": "review_proposal",
-                "version": 1,
-                "payload_ref": art_id,
-                "confirmed_by": None,
-                "payload": proposal.model_dump(),
-            }
-            step.output_ref = art_id
-            step.status = "done"
+        review = _build_review_proposal(step)
+        if review is not None:
+            proposal, prefix = review
+            _store_review_artifact(step, artifacts, proposal, id_prefix=prefix)
         else:
             outcome = await invoke_capability(
                 step.kind, ctx=ctx, state=state, nodes=nodes
@@ -237,17 +241,14 @@ def await_human_node(state: dict) -> dict[str, Any]:
             "kind": step.kind.value,
         }
     )
-    # Resume may carry confirm / modify payload from API
     if isinstance(resume, dict):
         if resume.get("action") == "modify" and resume.get("payload") is not None:
             art["payload"] = resume["payload"]
             art["version"] = int(art.get("version") or 1) + 1
         art["confirmed_by"] = "user"
-        artifacts[art_id] = art
-        synced = legacy_state_from_artifact(step.kind, art.get("payload"))
-        return {"artifacts": artifacts, **synced}
-    # Bare resume (ainvoke None after API marked confirm in state)
-    art["confirmed_by"] = art.get("confirmed_by") or "user"
+    else:
+        # Bare resume (ainvoke None after API marked confirm in state)
+        art["confirmed_by"] = art.get("confirmed_by") or "user"
     artifacts[art_id] = art
     synced = legacy_state_from_artifact(step.kind, art.get("payload"))
     return {"artifacts": artifacts, **synced}
