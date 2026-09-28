@@ -411,17 +411,43 @@ class Runner:
             )
             return
 
-        # 函数式 interrupt()：节点挂澄清
+        # 函数式 interrupt()：人机门禁或澄清
         node = nxt[0] if nxt else None
         questions: list = []
+        gate_payload: dict | None = None
         for ptask in state.tasks:
             for intr in getattr(ptask, "interrupts", []):
                 val = intr.value
                 if isinstance(val, dict):
                     node = val.get("node", node)
+                    if val.get("gate_kind"):
+                        gate_payload = val
                     qs = val.get("questions")
                     if isinstance(qs, list):
                         questions.extend(qs)
+
+        if gate_payload is not None:
+            stage = str(
+                gate_payload.get("kind")
+                or gate_payload.get("step_id")
+                or node
+                or "await_human"
+            )
+            await ctx.daos.task.update_status(
+                ctx.task.id, status="waiting_confirm", current_stage=stage
+            )
+            payload = {
+                "gate_kind": gate_payload.get("gate_kind"),
+                "artifact_id": gate_payload.get("artifact_id") or "",
+                "step_id": gate_payload.get("step_id"),
+                "stage": stage,
+                "stage_version": 1,
+            }
+            await ctx.emit("human_gate_waiting", payload)
+            # 兼容旧前端：同步发 checkpoint_waiting
+            await ctx.emit("checkpoint_waiting", payload)
+            return
+
         await ctx.daos.task.update_status(
             ctx.task.id, status="waiting_input", current_stage=node
         )

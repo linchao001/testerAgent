@@ -586,6 +586,7 @@ class TestTaskRun:
 
         # CP1 放行 → CP2
         r2 = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+            "gate_kind": "plan_confirm",
             "stage": STAGE_LINK_IDENTIFY, "artifact_id": "art-link",
             "expected_version": 1, "action": "confirm",
         })
@@ -599,6 +600,7 @@ class TestTaskRun:
 
         # CP2 放行 → 跑到 END → completed
         r3 = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+            "gate_kind": "plan_confirm",
             "stage": STAGE_POINT_WRITE, "artifact_id": "art-point",
             "expected_version": 1, "action": "confirm",
         })
@@ -611,6 +613,7 @@ class TestTaskRun:
         assert detail["error_info"] is None
         # 终态后重复 confirm → 409
         r4 = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+            "gate_kind": "plan_confirm",
             "stage": STAGE_POINT_WRITE, "artifact_id": "art-point",
             "expected_version": 1, "action": "confirm",
         })
@@ -728,6 +731,7 @@ class TestTaskConfirm:
         _wait_status(db, TASK, "waiting_confirm")
 
         stale = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+            "gate_kind": "plan_confirm",
             "stage": STAGE_LINK_IDENTIFY, "artifact_id": "art-link",
             "expected_version": 2, "action": "confirm",
         })
@@ -736,6 +740,7 @@ class TestTaskConfirm:
         assert _get_task(db).status == "waiting_confirm"  # 冲突不改状态
 
         ok = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+            "gate_kind": "plan_confirm",
             "stage": STAGE_LINK_IDENTIFY, "artifact_id": "art-link",
             "expected_version": 1, "action": "confirm",
         })
@@ -752,6 +757,7 @@ class TestTaskConfirm:
         _wait_status(db, TASK, "waiting_confirm")
 
         r = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+            "gate_kind": "plan_confirm",
             "stage": STAGE_LINK_IDENTIFY, "artifact_id": "art-link",
             "expected_version": 1, "action": "modify",
             "payload": REVISED_LINK_PLAN_DICT,
@@ -789,6 +795,7 @@ class TestTaskConfirm:
             client.post(f"/api/v1/tasks/{TASK}/run")
             _wait_status(db, TASK, "waiting_confirm")
             r = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+                "gate_kind": "plan_confirm",
                 "stage": STAGE_LINK_IDENTIFY, "artifact_id": "art-link",
                 "expected_version": 1, "action": "modify",
                 "payload": REVISED_LINK_PLAN_DICT,
@@ -805,6 +812,7 @@ class TestTaskConfirm:
         client.post(f"/api/v1/tasks/{TASK}/run")
         _wait_status(db, TASK, "waiting_confirm")
         r = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+            "gate_kind": "plan_confirm",
             "stage": STAGE_LINK_IDENTIFY, "artifact_id": "art-link",
             "expected_version": 1, "action": "modify",
         })
@@ -817,6 +825,7 @@ class TestTaskConfirm:
         client.post(f"/api/v1/tasks/{TASK}/run")
         _wait_status(db, TASK, "waiting_confirm")
         r = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+            "gate_kind": "plan_confirm",
             "stage": STAGE_LINK_IDENTIFY, "artifact_id": "art-link",
             "expected_version": 1, "action": "modify",
             "payload": {"links": "not-a-list"},
@@ -830,6 +839,7 @@ class TestTaskConfirm:
         client.post(f"/api/v1/tasks/{TASK}/run")
         _wait_status(db, TASK, "waiting_confirm")
         r = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+            "gate_kind": "plan_confirm",
             "stage": STAGE_POINT_WRITE, "artifact_id": "art-link",
             "expected_version": 1, "action": "confirm",
         })
@@ -845,6 +855,7 @@ class TestTaskConfirm:
             client.post(f"/api/v1/tasks/{TASK}/run")
             _wait_status(db, TASK, "waiting_confirm")
             m = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+                "gate_kind": "plan_confirm",
                 "stage": STAGE_LINK_IDENTIFY, "artifact_id": "art-link",
                 "expected_version": 1, "action": "modify",
                 "payload": REVISED_LINK_PLAN_DICT,
@@ -852,6 +863,7 @@ class TestTaskConfirm:
             assert m.status_code == 200
             _wait_confirm_at(db, TASK, STAGE_POINT_WRITE)
             r = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+                "gate_kind": "plan_confirm",
                 "stage": STAGE_LINK_IDENTIFY, "artifact_id": "art-link",
                 "expected_version": 1, "action": "confirm",
             })
@@ -866,6 +878,7 @@ class TestTaskConfirm:
                         stage=STAGE_LINK_IDENTIFY, conv="conv-2", ws="ws-2"))
         _run(_seed_artifact(db, "task-2", "art-other", STAGE_LINK_IDENTIFY))
         r = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+            "gate_kind": "plan_confirm",
             "stage": STAGE_LINK_IDENTIFY, "artifact_id": "art-other",
             "expected_version": 1, "action": "confirm",
         })
@@ -878,6 +891,7 @@ class TestTaskConfirm:
         _run(_seed_artifact(db, TASK, "art-link", STAGE_LINK_IDENTIFY,
                             payload=LINK_PLAN_DICT))
         r = client.post(f"/api/v1/tasks/{TASK}/confirm", json={
+            "gate_kind": "plan_confirm",
             "stage": STAGE_LINK_IDENTIFY, "artifact_id": "art-link",
             "expected_version": 1, "action": "confirm",
         })
