@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from tester_agent.context.tokens import estimate_tokens
-from tester_agent.graph.retrieval.ops_b import estimate_tokens as ops_b_estimate_tokens
+from tester_agent.context.retrieval.ops_b import estimate_tokens as ops_b_estimate_tokens
 
 
 def test_empty_is_zero():

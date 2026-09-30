@@ -1,26 +1,28 @@
 /**
- * ChatPage（WP-F1）：需求输入 → 建任务自动 run → SSE → 澄清卡 / checkpoint 提示；
- * change_request 带 @阶段 时 ImpactPreview 二次确认后 rollback。
+ * ChatPage：聊天优先会话壳。
+ * 自由对话（可附 .md）→ 助手经 start_case_generation 建任务；门禁/澄清内联。
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   answerTask,
   createConversation,
-  createTask,
   getTask,
   listMessages,
   listWorkspaces,
   rollbackTask,
-  runTask,
   sendMessage,
 } from '../api/endpoints'
 import type { Message, StageName, Task } from '../api/domain'
 import { ApiError, NetworkError } from '../api/types'
+import {
+  ChatComposer,
+  composeMessageWithAttachments,
+  type PendingAttachment,
+} from '../components/chat/ChatComposer'
 import { ClarificationCard } from '../components/chat/ClarificationCard'
 import { MessageList } from '../components/chat/MessageList'
-import { RequirementInput } from '../components/chat/RequirementInput'
 import { GateConfirmCard } from '../components/session/GateConfirmCard'
 import { ReviewProposalCard } from '../components/session/ReviewProposalCard'
 import { ImpactPreview } from '../components/confirm/ImpactPreview'
@@ -55,12 +57,14 @@ export function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [task, setTask] = useState<Task | null>(null)
   const [composer, setComposer] = useState('')
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const [busy, setBusy] = useState(false)
   const [statusHint, setStatusHint] = useState<string | null>(null)
   const [pendingRollback, setPendingRollback] =
     useState<PendingRollback | null>(null)
   const [impactPending, setImpactPending] = useState(false)
   const [impactResult, setImpactResult] = useState<string | null>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const refreshMessages = useCallback(async (convId: string) => {
     const page = await listMessages(convId, 100)
@@ -73,7 +77,13 @@ export function ChatPage() {
     return t
   }, [])
 
-  // 引导：选用已有工作区 + 建会话；无工作区则引导去 /workspaces（不静默建默认区）
+  useEffect(() => {
+    const el = messagesEndRef.current
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [messages, clarification, checkpoint])
+
   useEffect(() => {
     let cancelled = false
     async function boot() {
@@ -111,7 +121,6 @@ export function ChatPage() {
     }
   }, [refreshMessages, setConversationId, setWorkspaceId])
 
-  // 任务 SSE
   useEffect(() => {
     if (!taskId) {
       detach()
@@ -124,7 +133,6 @@ export function ChatPage() {
     return () => detach()
   }, [taskId, attach, detach, refreshTask])
 
-  // checkpoint 后刷新任务（拿 active_artifacts）
   useEffect(() => {
     if (checkpoint && taskId) {
       void refreshTask(taskId).catch(() => undefined)
@@ -133,31 +141,6 @@ export function ChatPage() {
       )
     }
   }, [checkpoint, taskId, refreshTask])
-
-  async function handleRequirementSubmit(md: string) {
-    if (!conversationId) return
-    clearLastError()
-    setBusy(true)
-    setStatusHint('创建任务…')
-    setImpactResult(null)
-    try {
-      const created = await createTask({
-        conversation_id: conversationId,
-        requirement_md: md,
-      })
-      setTaskId(created.id)
-      setTask(created)
-      setStatusHint('启动生成…')
-      await runTask(created.id)
-      setStatusHint('生成中，已订阅事件流…')
-      await refreshMessages(conversationId)
-    } catch (err) {
-      reportError(err as ApiError | NetworkError | Error)
-      setStatusHint(null)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   async function handleClarificationSubmit(
     answers: Array<{ question_id: string; answer: string }>,
@@ -179,10 +162,10 @@ export function ChatPage() {
   }
 
   function handleComposerSend() {
-    const content = composer.trim()
+    const content = composeMessageWithAttachments(composer, attachments)
     if (!content || !conversationId || busy) return
     const stage = parseStageMention(content)
-    if (stage) {
+    if (stage && taskId) {
       setPendingRollback({ stage, content })
       return
     }
@@ -194,9 +177,23 @@ export function ChatPage() {
     clearLastError()
     setBusy(true)
     try {
-      await sendMessage(conversationId, { content, kind: 'chat' })
+      const out = await sendMessage(conversationId, { content, kind: 'chat' })
       setComposer('')
+      setAttachments([])
+      const started =
+        out.started_task_id ||
+        (typeof out.assistant?.payload?.started_task_id === 'string'
+          ? out.assistant.payload.started_task_id
+          : null)
+      if (started) {
+        setTaskId(started)
+        setStatusHint('已启动用例生成，订阅事件流…')
+        setImpactResult(null)
+      }
       await refreshMessages(conversationId)
+      if (started) {
+        await refreshTask(started).catch(() => undefined)
+      }
     } catch (err) {
       reportError(err as ApiError | NetworkError | Error)
     } finally {
@@ -228,6 +225,7 @@ export function ChatPage() {
         expected_version: art.stage_version,
       })
       setComposer('')
+      setAttachments([])
       setPendingRollback(null)
       setImpactResult(
         out.impact.summary ||
@@ -245,7 +243,7 @@ export function ChatPage() {
 
   if (bootstrapping) {
     return (
-      <p className="text-sm text-stone-500" data-testid="chat-booting">
+      <p className="p-4 text-sm text-stone-500" data-testid="chat-booting">
         正在准备工作区与会话…
       </p>
     )
@@ -253,10 +251,10 @@ export function ChatPage() {
 
   if (!workspaceId) {
     return (
-      <div className="space-y-3" data-testid="chat-need-workspace">
+      <div className="space-y-3 p-4" data-testid="chat-need-workspace">
         <h1 className="text-xl font-semibold text-stone-900">会话</h1>
         <p className="text-sm text-stone-600">
-          尚未配置工作区。请先创建工作区并绑定知识库连接，再回来发起需求。
+          尚未配置工作区。请先创建工作区并绑定知识库连接，再回来对话。
         </p>
         <Link
           to="/workspaces"
@@ -270,23 +268,18 @@ export function ChatPage() {
   }
 
   return (
-    <div className="space-y-6" data-testid="chat-page">
-      <header className="space-y-1">
-        <h1 className="text-xl font-semibold text-stone-900">会话</h1>
-        <p className="text-sm text-stone-500">
-          粘贴或导入需求 MD，平台将自动创建任务并启动四阶段生成。
-        </p>
+    <div className="flex h-full min-h-0 flex-col" data-testid="chat-page">
+      <header className="shrink-0 space-y-1 border-b border-stone-100 px-1 pb-3 pt-2">
+        <h1 className="text-lg font-semibold text-stone-900">会话</h1>
         <p className="text-xs text-stone-400">
-          工作区 {workspaceId ?? '—'} · 会话 {conversationId ?? '—'}
+          工作区 {workspaceId} · 会话 {conversationId ?? '—'}
           {taskId ? ` · 任务 ${taskId}` : ''}
         </p>
       </header>
 
-      {!taskId ? (
-        <RequirementInput disabled={busy} onSubmit={handleRequirementSubmit} />
-      ) : (
+      {taskId ? (
         <section
-          className="rounded-md border border-stone-200 bg-white px-4 py-3"
+          className="mx-1 mt-2 shrink-0 rounded-lg border border-stone-200 bg-white px-3 py-2"
           data-testid="task-status"
         >
           <div className="flex flex-wrap items-center gap-3 text-sm">
@@ -312,10 +305,41 @@ export function ChatPage() {
               [{taskError.code}] {taskError.message}
             </p>
           ) : null}
-          {checkpoint && taskId ? (
-            <div className="mt-3" data-testid="checkpoint-banner">
-              {checkpoint.gate_kind === 'review_decision' ? (
-                <ReviewProposalCard
+          {impactResult ? (
+            <p className="mt-2 text-sm text-stone-600" data-testid="impact-result">
+              {impactResult}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-1">
+        <MessageList messages={messages} />
+
+        {clarification && clarification.length > 0 ? (
+          <div className="mb-4">
+            <ClarificationCard
+              questions={clarification}
+              disabled={busy}
+              onSubmit={handleClarificationSubmit}
+            />
+          </div>
+        ) : null}
+
+        {checkpoint && taskId ? (
+          <div className="mb-4" data-testid="checkpoint-banner">
+            {checkpoint.gate_kind === 'review_decision' ? (
+              <ReviewProposalCard
+                taskId={taskId}
+                checkpoint={checkpoint}
+                onDone={() => {
+                  clearCheckpoint()
+                  void refreshTask(taskId)
+                }}
+              />
+            ) : (
+              <>
+                <GateConfirmCard
                   taskId={taskId}
                   checkpoint={checkpoint}
                   onDone={() => {
@@ -323,80 +347,28 @@ export function ChatPage() {
                     void refreshTask(taskId)
                   }}
                 />
-              ) : (
-                <>
-                  <GateConfirmCard
-                    taskId={taskId}
-                    checkpoint={checkpoint}
-                    onDone={() => {
-                      clearCheckpoint()
-                      void refreshTask(taskId)
-                    }}
-                  />
-                  <Link
-                    to="/confirm"
-                    className="mt-2 inline-block text-sm font-medium text-teal-800 underline"
-                  >
-                    打开完整确认页（可选）→
-                  </Link>
-                </>
-              )}
-            </div>
-          ) : null}
-          {impactResult ? (
-            <p className="mt-2 text-sm text-stone-600" data-testid="impact-result">
-              {impactResult}
-            </p>
-          ) : null}
-        </section>
-      )}
-
-      {clarification && clarification.length > 0 ? (
-        <ClarificationCard
-          questions={clarification}
-          disabled={busy}
-          onSubmit={handleClarificationSubmit}
-        />
-      ) : null}
-
-      <section className="space-y-3">
-        <h2 className="text-sm font-medium text-stone-800">消息</h2>
-        <MessageList messages={messages} />
-      </section>
-
-      {taskId ? (
-        <section className="space-y-2" data-testid="composer">
-          <label className="block text-sm font-medium text-stone-800" htmlFor="chat-composer">
-            对话 / 变更请求
-          </label>
-          <p className="text-xs text-stone-500">
-            普通消息直接发送；含{' '}
-            <code className="rounded bg-stone-100 px-1">@链路</code> /{' '}
-            <code className="rounded bg-stone-100 px-1">@测试点</code>{' '}
-            时作为 change_request，确认后回退对应阶段。
-          </p>
-          <textarea
-            id="chat-composer"
-            data-testid="composer-input"
-            className="min-h-20 w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm outline-none focus:border-stone-400"
-            value={composer}
-            disabled={busy}
-            onChange={(e) => setComposer(e.target.value)}
-            placeholder="例如：@链路 需求范围调整，请从链路识别重跑…"
-          />
-          <div className="flex justify-end">
-            <button
-              type="button"
-              data-testid="composer-send"
-              disabled={busy || !composer.trim()}
-              className="rounded-md bg-stone-900 px-3 py-1.5 text-sm text-white hover:bg-stone-700 disabled:opacity-50"
-              onClick={handleComposerSend}
-            >
-              发送
-            </button>
+                <Link
+                  to="/confirm"
+                  className="mt-2 inline-block text-sm font-medium text-teal-800 underline"
+                >
+                  打开完整确认页（可选）→
+                </Link>
+              </>
+            )}
           </div>
-        </section>
-      ) : null}
+        ) : null}
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      <ChatComposer
+        value={composer}
+        attachments={attachments}
+        disabled={busy}
+        onChange={setComposer}
+        onAttachmentsChange={setAttachments}
+        onSend={handleComposerSend}
+      />
 
       <ImpactPreview
         open={pendingRollback != null}

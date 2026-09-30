@@ -502,8 +502,8 @@ class TestAtomicCrashAndCleanup:
         report = await store.soft_cleanup(7)
         assert report == CleanupReport(0, 0)
         assert fresh_tmp.exists() and target.exists()
-        # 拨旧后清理
-        old_ts = time.time() - 8 * 86400
+        # 拨旧后清理（留足余量，避免 mtime≈cutoff 边界）
+        old_ts = time.time() - 10 * 86400
         os.utime(fresh_tmp, (old_ts, old_ts))
         report = await store.soft_cleanup(8)
         assert report.tmp_files_removed == 1

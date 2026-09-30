@@ -208,6 +208,9 @@ async def build_task_context(app: "AppContext", task_id: str) -> "TaskContext":
         task.workspace_id, ws.kb_config_obj()
     )
 
+    from ..store.models import ContextJournalDAO
+
+    journal_dao = ContextJournalDAO(db)
     daos = DAOs(
         task=task_dao,
         message=MessageDAO(db),
@@ -215,8 +218,35 @@ async def build_task_context(app: "AppContext", task_id: str) -> "TaskContext":
         testcase=TestcaseDAO(db),
         trace=TraceDAO(db),
         event=EventDAO(db),
+        journal=journal_dao,
     )
     bus = app.bus
+    context_store = None
+    runtime_cfg: dict = {}
+    try:
+        from ..store.models import ConfigDAO
+
+        runtime_cfg = (await ConfigDAO(db).get()).runtime_dict()
+    except Exception:  # noqa: BLE001
+        runtime_cfg = {}
+    if bool(runtime_cfg.get("context.enabled", True)):
+        try:
+            context_store = await app.context_registry.restore_owner(
+                owner_type="task",
+                owner_id=task_id,
+                workspace_id=task.workspace_id,
+                daos=daos,
+                journal_sink=journal_dao,
+                policy_version=str(
+                    runtime_cfg.get("context.policy_version", "cp-v1")
+                ),
+                step_window=int(runtime_cfg.get("context.step_window", 1)),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "context store restore failed; continuing without context_store",
+                extra={"task_id": task_id},
+            )
     return TaskContext(
         app=app,
         task=task,
@@ -229,6 +259,7 @@ async def build_task_context(app: "AppContext", task_id: str) -> "TaskContext":
         daos=daos,
         emit=Emitter(bus, task_id) if bus is not None else None,
         cancel_event=asyncio.Event(),
+        context_store=context_store,
     )
 
 

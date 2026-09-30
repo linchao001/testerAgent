@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 python3 -m venv .venv && source .venv/bin/activate
+pip install ./lib/reme_ai-0.4.1.8-py3-none-any.whl    # vendored ReMe 0.4.1.8
 pip install -e ./server                               # 含 server/pyproject 依赖
 [ -f server/.env ] || cp server/.env.example server/.env
 python -m tester_agent.cli init-db                    # 迁移+内置 agent 种子+config 单行（WP-02 接线）

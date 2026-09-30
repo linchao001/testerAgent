@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable
 
 from .manager import ReMeMemoryManager
 
@@ -16,9 +17,14 @@ ManagerFactory = Callable[..., ReMeMemoryManager]
 
 
 class WorkspaceMemoryPool:
-    """Lazy per-workspace embedded ReMe managers.
+    """Per-workspace embedded ReMe managers (eager warm-start + lazy fallback).
 
-    Vault path: ``{data_root}/workspaces/{workspace_id}/reme/``.
+    Vault path: ``{workspace_root}/reme/`` (default
+    ``{data_root}/workspaces/{workspace_id}/``, or a registered custom root).
+
+    App lifespan should call :meth:`start_all` for every active workspace
+    (QwenPaw-style); :meth:`get_or_start` remains the cache/hit path for
+    newly created workspaces and recovery after invalidate.
     """
 
     def __init__(
@@ -32,6 +38,7 @@ class WorkspaceMemoryPool:
         self._managers: dict[str, ReMeMemoryManager] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._global = asyncio.Lock()
+        self._ws_roots: dict[str, Path] = {}
 
     def _default_factory(
         self,
@@ -47,7 +54,16 @@ class WorkspaceMemoryPool:
             model_config=kwargs.get("model_config"),
         )
 
+    def register_workspace_root(self, workspace_id: str, root: Path | str) -> None:
+        self._ws_roots[workspace_id] = Path(root).expanduser().resolve()
+
+    def unregister_workspace_root(self, workspace_id: str) -> None:
+        self._ws_roots.pop(workspace_id, None)
+
     def vault_dir_for(self, workspace_id: str) -> Path:
+        pinned = self._ws_roots.get(workspace_id)
+        if pinned is not None:
+            return pinned / "reme"
         return self.data_root / "workspaces" / workspace_id / "reme"
 
     async def get_or_start(
@@ -75,6 +91,38 @@ class WorkspaceMemoryPool:
             await mgr.start()
             self._managers[workspace_id] = mgr
             return mgr
+
+    async def start_all(
+        self,
+        workspaces: Iterable[tuple[str, dict[str, Any]]],
+        *,
+        model_config: dict[str, Any] | None = None,
+    ) -> dict[str, bool]:
+        """Warm-start embedded ReMe for each workspace (all non-deleted).
+
+        Per-workspace failures are logged and recorded as ``False``; they do
+        not raise or block the caller (aligns with optional memory in QwenPaw).
+        """
+        results: dict[str, bool] = {}
+        for workspace_id, kb_config in workspaces:
+            try:
+                mgr = await self.get_or_start(
+                    workspace_id,
+                    kb_config,
+                    model_config=model_config,
+                )
+                ok = bool(mgr.is_started)
+                results[workspace_id] = ok
+                if not ok:
+                    logger.warning(
+                        "ReMe warm-start incomplete for ws=%s", workspace_id
+                    )
+            except Exception:
+                logger.exception(
+                    "ReMe warm-start failed for ws=%s", workspace_id
+                )
+                results[workspace_id] = False
+        return results
 
     async def invalidate(self, workspace_id: str) -> None:
         lock = await self._lock_for(workspace_id)

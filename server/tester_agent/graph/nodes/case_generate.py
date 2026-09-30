@@ -69,7 +69,7 @@ from ...errors import AppError, LLMBadOutput
 from ...logging_config import get_logger
 from ...graph.batch import run_in_batches
 from ...graph.constants import BATCH_DEFAULT_SIZE, RETRIEVAL_PRESETS, STAGE_CASE_GENERATE
-from ...graph.retrieval.pipeline import close_retrieval_trace, retrieve_pipeline
+from ...context.retrieval.pipeline import close_retrieval_trace, retrieve_pipeline
 from ...prompts.loader import PromptLoader
 from ...store.models import ArtifactRow, CaseRow
 from .link_identify import render_knowledge_block

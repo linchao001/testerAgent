@@ -2,7 +2,6 @@
 
 键：(owner_type, owner_id)；任务/会话全程持有同一内存 store。重复 start
 幂等（忽略后续参数），evict 后允许重新 start（rebuild/测试隔离场景）。
-WP-30 仅进程内内存态；持久化由后续 WP 的 journal/rebuild 承接。
 
 WP-31：``ContextRegistry`` 实例类（AppContext.context_registry 持有独立
 实例，组合根可显式注入做隔离测试）；模块级函数操作进程默认实例，既有
@@ -11,9 +10,10 @@ WP-31：``ContextRegistry`` 实例类（AppContext.context_registry 持有独立
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from .journal import JournalSink
+from .rebuild import rebuild_store
 from .store import ContextStore
 
 OwnerType = Literal["task", "conversation"]
@@ -50,6 +50,34 @@ class ContextRegistry:
         self._stores[key] = store
         return store
 
+    async def restore_owner(
+        self,
+        *,
+        owner_type: OwnerType,
+        owner_id: str,
+        workspace_id: str,
+        daos: Any,
+        journal_sink: JournalSink | None = None,
+        policy_version: str = "cp-v1",
+        step_window: int = 1,
+    ) -> ContextStore:
+        """无内存 store 时经 rebuild 恢复并注册；已存在则幂等返回。"""
+        key = (owner_type, owner_id)
+        existing = self._stores.get(key)
+        if existing is not None:
+            return existing
+        store = await rebuild_store(
+            owner_type=owner_type,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            daos=daos,
+            journal_sink=journal_sink,
+            policy_version=policy_version,
+            step_window=step_window,
+        )
+        self._stores[key] = store
+        return store
+
     def get_owner(self, owner_type: OwnerType, owner_id: str) -> ContextStore | None:
         return self._stores.get((owner_type, owner_id))
 
@@ -78,6 +106,28 @@ def start_owner(
         workspace_id=workspace_id,
         policy_version=policy_version,
         journal=journal,
+    )
+
+
+async def restore_owner(
+    *,
+    owner_type: OwnerType,
+    owner_id: str,
+    workspace_id: str,
+    daos: Any,
+    journal_sink: JournalSink | None = None,
+    policy_version: str = "cp-v1",
+    step_window: int = 1,
+) -> ContextStore:
+    """无内存 store 时经 rebuild 恢复并注册；已存在则幂等返回。"""
+    return await _REGISTRY.restore_owner(
+        owner_type=owner_type,
+        owner_id=owner_id,
+        workspace_id=workspace_id,
+        daos=daos,
+        journal_sink=journal_sink,
+        policy_version=policy_version,
+        step_window=step_window,
     )
 
 

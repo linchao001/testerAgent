@@ -172,6 +172,6 @@ class TestInlinePromptVer:
     """pipeline.INLINE_PROMPT_VER 已换成 loader 版本。"""
 
     def test_inline_prompt_ver_matches_template(self):
-        from tester_agent.graph.retrieval.pipeline import INLINE_PROMPT_VER
+        from tester_agent.context.retrieval.pipeline import INLINE_PROMPT_VER
         assert INLINE_PROMPT_VER == "2026-09-26.1"
         assert INLINE_PROMPT_VER == prompt_version("retrieve/multi_query")

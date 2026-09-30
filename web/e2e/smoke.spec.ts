@@ -12,9 +12,12 @@ test.describe('WP-X1 UI smoke (MSW)', () => {
     await expect(page.getByRole('link', { name: '工作区' })).toBeVisible()
     await expect(page.getByRole('link', { name: '设置' })).toBeVisible()
 
-    await expect(
-      page.getByRole('heading', { name: '需求文档（Markdown）' }),
-    ).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByTestId('chat-page')).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(page.getByTestId('composer')).toBeVisible()
+    await expect(page.getByTestId('composer-attach')).toBeVisible()
+    await expect(page.getByTestId('start-generate-btn')).toHaveCount(0)
   })
 
   test('设置页加载模型表单', async ({ page }) => {

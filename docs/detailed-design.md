@@ -38,7 +38,7 @@
 - 所有时间存 UTC ISO8601 字符串（`datetime.now(timezone.utc).isoformat()`），前端本地渲染。
 - ID：业务主键一律 uuid4 hex（32 位）；对外展示用短码（前 8 位）。**确定性重算 ID** 用 uuid5，命名空间固定 `NAMESPACE = UUID("6f3d...固定")`（代码内常量 `ID_NS`）。
 - JSON 字段存库前统一 `model_dump_json()`；读出后由 DAO 层解析为对应 Pydantic 类型，业务层不接触原始字符串。
-- 分层依赖方向单向：`api → runtime/graph → adapters → store`；**store、adapters 不 import graph**；`reme_writer` 仅被 `api/kb.py` import（tech-design D4，CI 加 import-linter 规则）。
+- 分层依赖方向单向：`api → runtime/graph → context → adapters → store`（记忆 `memory` 由 adapters/context 使用）；**store、adapters 不 import graph/context**；`reme_writer` 仅被 `api/kb.py` import（tech-design D4，CI 加 import-linter 规则）。
 - 配置注入：各层构造函数显式传依赖（Context 对象，见 §6.1），不使用全局单例；仅 FastAPI app 持有一个组合根（composition root）。
 
 ### 1.3 代码内命名与阶段常量
@@ -1258,11 +1258,11 @@ point_id 由 API 侧确定性赋值（`pt-{story 在 LinkPlan 中的序号}-{批
 
 **② link_identify**
 
-1. 子图 index_line 档检索（allowed_types=[LINK_INDEX]，注入 ≤200 硬上限）；
+1. L4 管线 index_line 档检索（allowed_types=[LINK_INDEX]，注入 ≤200 硬上限）；
 2. LLM 产出 LinkPlan；API 侧重写临时 ID、校验 hit 项 entry_id 必须存在于注入白名单（不在则降级为 hit=false 并记 degraded）；
 3. 写 artifact(active, confirmed_by=null)；图在 cp1_gate 前中断，Runner 置 waiting_confirm。
 
-**③ point_write / case_generate**：走 §7.3 批次骨架；point_write 单元=已确认 stories（按 link 分组排序），case_generate 单元=active 测试点（默认每批 5 点）。每批独立调检索子图（config 按 §8.1 取），每批独立写 trace/snapshot（batch_id 贯穿）。
+**③ point_write / case_generate**：走 §7.3 批次骨架；point_write 单元=已确认 stories（按 link 分组排序），case_generate 单元=active 测试点（默认每批 5 点）。每批独立调 L4 `retrieve_pipeline`（config 按 §8.1 取），每批独立写 trace/snapshot（batch_id 贯穿）。
 
 **④ coverage_check**
 
@@ -1285,7 +1285,9 @@ point_id 由 API 侧确定性赋值（`pt-{story 在 LinkPlan 中的序号}-{批
 
 ---
 
-## 8. 检索子图详细设计
+## 8. 检索管线详细设计（L4 `server/context/`）
+
+> 实现包：`tester_agent.context.retrieval`（tech-design v0.3.1）；由 L3 能力节点 / playground / eval 调用，**不**挂在 `graph/` 拓扑内。
 
 ### 8.1 阶段配置（初值，S5 标定后固化）
 
@@ -2037,7 +2039,7 @@ agent.config（内置用例智能体种子配置，可编辑）：
 |---|---|---|
 | C0 地基 | store(DDL/DAO/迁移) + FileStore + config + 健康检查 | DAO/原子写/对账单测全绿 |
 | C1 适配器 | FakeReader 先行 + LLMClient（含韧性）+ ReMe SDK 适配（S1） | caps 探测与降级可演示；S1 结论归档 |
-| C2 检索子图 | 六算子 + trace + 快照三档 + playground | 单测 + smoke eval 出数 |
+| C2 检索管线（L4 context） | 六算子 + trace + 快照三档 + playground | 单测 + smoke eval 出数 |
 | C3 图主干 | 五节点 + CP 中断 + 批次执行器（不接 UI，API 驱动） | 场景 1~6 集成测试全绿 |
 | C4 运行时 | Runner/Registry/EventBus/Reaper + SSE | 场景 7 + 重启恢复测试 |
 | C5 前端主流程 | Chat/Confirm/Workbench/Debug 四页 | E2E 主场景走通 |

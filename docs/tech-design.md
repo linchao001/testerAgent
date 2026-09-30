@@ -2,14 +2,16 @@
 
 | 项 | 内容 |
 |---|---|
-| 版本 | v0.3 |
+| 版本 | v0.3.1 |
 | 状态 | 一期候选发布 |
-| 日期 | 2026-09-28 |
+| 日期 | 2026-09-29 |
 | 对应需求 | [PRD v0.7](file:///D:/code/github/testerAgent/docs/PRD.md) |
 
+> v0.3.1 变更摘要：§2/§6 将「上下文精准策略」升为 **L4 上下文层**（`server/tester_agent/context/`，检索管线在 `context/retrieval/`）；原记忆/接入/存储顺延为 L5/L6/L7；L3 编排只调用 L4 组装结果，不再内嵌检索管线。
+>
 > v0.3 变更摘要（WP-X2）：① §8 S1~S7 全部写入一期结论；② §9 开放问题与 PRD v0.7 对齐（Q1/Q2/Q6/Q7/Q11/Q12 closed）；③ 备份 CLI / 导出·提案发布门禁见 detailed-design §19.5 与 `docs/plan/release-checklist.md`。
 >
-> **嵌入式 ReMe（同日修订）**：S1/D18 改为同进程嵌入；HTTP `service` 删除；目录见 §6 `memory/` + `adapters/reme_sdk.py`；细节 [reme-memory 设计](superpowers/specs/2026-09-28-reme-memory-module-design.md)。
+> **嵌入式 ReMe（同日修订）**：S1/D18 改为同进程嵌入；HTTP `service` 删除；目录见 §6 `memory/` + `adapters/reme_sdk.py`；细节 [reme-memory 设计](superpowers/specs/2026-09-28-reme-memory-module-design.md)。v0.3.1 起检索管线在 `tester_agent.context.retrieval`（L4）。
 >
 > **实现级契约**：[detailed-design.md v0.4](file:///D:/code/github/testerAgent/docs/detailed-design.md) 已对齐 Plan-Execute（控制环 §7、ConfirmIn.gate_kind、SessionPage、迁移 004）。
 >
@@ -53,28 +55,34 @@
 │ L3 编排层  server/graph + runtime (LangGraph)            │
 │   控制环：plan→dispatch→execute_step→await_human→reflect │
 │   能力：intake / link_identify / point_write / case_generate │
-│   子管线：精准检索；对话 tool_agent（可挂 memory_search）   │
+│   调用 L4 组装上下文；对话 tool_agent（可挂 memory_search） │
 │   Runtime：Runner + EventBus                             │
 ├─────────────────────────────────────────────────────────┤
-│ L4 记忆层  server/memory                                 │
+│ L4 上下文层  server/context                              │
+│   精准检索管线：multi_query→recall→filter→rerank→extract │
+│   →assemble；阶段化 RetrievalConfig / 预算与注入组装       │
+│   全程写 retrieval_trace / context_snapshot；显式降级链     │
+│   ad-hoc playground / eval 复用同一管线（可独立调试）       │
+├─────────────────────────────────────────────────────────┤
+│ L5 记忆层  server/memory                                 │
 │   WorkspaceMemoryPool / ReMeMemoryManager（一工作区一嵌入） │
 │   个人记忆（daily/digest）+ 可选共享 KB 挂载；auto_memory  │
 │   对话工具 memory_search；**不**暴露 save_to_knowledge     │
 ├─────────────────────────────────────────────────────────┤
-│ L5 接入层  server/adapters                               │
-│   SdkReMeReader（只读，供 L3）/ SdkReMeWriter（仅 L2 confirm）│
+│ L6 接入层  server/adapters                               │
+│   SdkReMeReader（只读，供 L4）/ SdkReMeWriter（仅 L2 confirm）│
 │   LLMClient（DeepSeek）/ ExportService                   │
 ├─────────────────────────────────────────────────────────┤
-│ L6 存储层  server/store + data/                          │
+│ L7 存储层  server/store + data/                          │
 │   SQLite（WAL：元数据/轨迹/配置/事件）                     │
 │   文件：用例 MD / 快照 / reme vault（data/workspaces/…）   │
 │   Reconciler：启动与定时对账（DB 行 ↔ 文件）               │
 └─────────────────────────────────────────────────────────┘
 ```
 
-分层口径：L1→L6 按**调用与信任边界**自上而下——交互、门禁 API、编排、记忆能力本体、协议适配、持久化。`memory/` 单独成 L4，是因为它负责嵌入生命周期与个人/共享记忆语义；`adapters/reme_sdk` 只把同一嵌入实例适配为冻结的 `ReMeReader`/`ReMeWriter` Protocol（L5），不承担记忆业务本身。
+分层口径：L1→L7 按**调用与信任边界**自上而下——交互、门禁 API、编排、**上下文精准策略**、记忆能力本体、协议适配、持久化。`context/` 单独成 L4，是因为它把「召得全/裁得准/用得上」落成可独立调试与评测的工程组件（PRD 6.1），与 L3 控制环解耦；L3 只消费已组装的注入块，不内嵌检索算子。`memory/` 单独成 L5，是因为它负责嵌入生命周期与个人/共享记忆语义；`adapters/reme_sdk` 只把同一嵌入实例适配为冻结的 `ReMeReader`/`ReMeWriter` Protocol（L6），不承担记忆业务本身。
 
-关键约束：**L3 编排层仅持有只读 `ReMeReader`，`ReMeWriter` 只暴露给 L2 的专用确认端点**；对话可挂 `memory_search`，不可挂 `save_to_knowledge`。从代码结构上保证 agent 链路无法触达知识库写入（PRD 7 硬性要求）。
+关键约束：**L4 上下文层持有只读 `ReMeReader`（经 L6 适配）；L3 编排不直接持有 Reader，只调用 L4**；`ReMeWriter` 只暴露给 L2 的专用确认端点；对话可挂 `memory_search`，不可挂 `save_to_knowledge`。从代码结构上保证 agent 链路无法触达知识库写入（PRD 7 硬性要求）。
 
 ### 2.1 部署与并发约束（一期显式约束，不提前做分布式）
 
@@ -367,7 +375,7 @@ testcase.file_path、context_snapshot.snapshot_path 均存相对 `data/` 的路�
 class TaskState(TypedDict):
     task_id: str
     graph_run_id: str
-    workspace_id: str               # 节点据此取本工作区的 ReMeAdapter（检索隔离边界）
+    workspace_id: str               # 传给 L4；按工作区取 ReMeReader（检索隔离边界）
     clauses: list[ClauseRef]        # intake 产出的需求条款索引（正文在文件，不进 state）
     # 阶段产物（结构化，阶段间唯一传递物 —— 对应 PRD 6.1 "阶段隔离"）
     link_plan: LinkPlan | None        # 链路/用户故事清单
@@ -380,7 +388,7 @@ class TaskState(TypedDict):
     batch_cursor: dict[str, int]     # 节点内批次进度游标（见 4.2③）
 ```
 
-注意：state 中**不放需求正文、不放检索到的知识正文、不放对话历史**；知识只在各节点内部组装进 prompt，需求正文按 clause_id 从文件按需读取——这是"阶段隔离"的落地点，也避免长需求被逐 checkpoint 复制膨胀。
+注意：state 中**不放需求正文、不放检索到的知识正文、不放对话历史**；知识由 L4 组装后仅在能力节点内部注入 prompt，需求正文按 clause_id 从文件按需读取——这是"阶段隔离"的落地点，也避免长需求被逐 checkpoint 复制膨胀。
 
 ### 4.2 节点与流转
 
@@ -390,7 +398,7 @@ class TaskState(TypedDict):
                  └──────┬──────┘
                         ▼
                  ┌─────────────┐
-                 │ link_identify│ 调检索子图(索引摘要档)→链路清单；歧义→挂起提问
+                 │ link_identify│ 调 L4 检索管线(索引摘要档)→链路清单；歧义→挂起提问
                  └──────┬──────┘
                         ▼
                  ╔═════════════╗
@@ -425,14 +433,14 @@ class TaskState(TypedDict):
 - **⑤ 回退**：按 §3.2 规则 2 执行，派生 run、影响面继承、初始化新 checkpoint。
 - **⑥ 图注册**：`main_graph.py` 以 agent_type → 编译后图的注册表组织，一期仅注册 case_designer 的主图；阶段标识全程字符串，不建枚举常量耦合（R37）。
 
-### 4.3 检索子图（精准检索管线）
+### 4.3 检索管线（L4 上下文层，`server/context/`）
 
-三个阶段节点复用同一个子图，仅配置不同：
+三个阶段能力复用同一管线，仅配置不同；实现落在 L4，由 L3 `execute_step` / 能力节点调用，不作为编排图拓扑的一部分：
 
 ```
-retrieve_subgraph(config: RetrievalConfig)
+retrieve_pipeline(config: RetrievalConfig)   # server/context/
   ┌─ multi_query      生成 N 路 query 表述（原文/关键词/同义改写）
-  ├─ parallel_recall  并行调 ReMeAdapter.search，top-K 放宽，并集去重
+  ├─ parallel_recall  并行调 ReMeReader.search，top-K 放宽，并集去重
   ├─ meta_filter      按知识类型/链路归属结构化过滤
   ├─ rerank           LLM 相关性打分，按预算 top-N 截断
   ├─ passage_extract  长文档段落级抽取
@@ -479,7 +487,7 @@ retrieve_subgraph(config: RetrievalConfig)
 
 **① 检索漏斗 —— 哪条知识在哪一步被裁掉**
 
-检索子图每个算子的输出计数、被裁条目原因、单路延迟与错误，随 `retrieval_trace.candidates`（`kept/drop_reason/latency_ms/error`）与 `context_snapshot.latencies` 留痕。面板按阶段渲染漏斗：召回数 → 过滤后 → 重排截断后 → 实际注入。
+L4 检索管线每个算子的输出计数、被裁条目原因、单路延迟与错误，随 `retrieval_trace.candidates`（`kept/drop_reason/latency_ms/error`）与 `context_snapshot.latencies` 留痕。面板按阶段渲染漏斗：召回数 → 过滤后 → 重排截断后 → 实际注入。
 
 **② 组装快照 —— 模型当时到底看到了什么**
 
@@ -552,7 +560,7 @@ budget_warning      # {node, tokens_est, budget}
 
 **运行中配置变更（R21）**：model_config / agent.config 变更只对**之后启动的新 run 与新批次**生效；同一 run 内冻结配置快照（model_ref 可溯源）。变更模型配置后，挂起中任务恢复时前端提示配置已变化。
 
-**离线评测（R5，内部基础设施，非用户功能）**：`server/eval/` 提供最小 eval 管线——导入黄金集（Q4：历史需求 + 已采纳用例，5~10 组），可对指定 prompt_template_ver / 预算配置 / 模型跑指定阶段，输出召回率（目标条目是否在 candidates）、注入率、引用率、条款覆盖率与 token/延迟成本，并支持两版配置 diff。该管线复用检索子图与节点函数，不另建一套逻辑；无黄金集前以冒烟集（少量手工构造样例）保证回归。
+**离线评测（R5，内部基础设施，非用户功能）**：`server/eval/` 提供最小 eval 管线——导入黄金集（Q4：历史需求 + 已采纳用例，5~10 组），可对指定 prompt_template_ver / 预算配置 / 模型跑指定阶段，输出召回率（目标条目是否在 candidates）、注入率、引用率、条款覆盖率与 token/延迟成本，并支持两版配置 diff。该管线复用 L4 `retrieve_pipeline` 与能力节点函数，不另建一套逻辑；无黄金集前以冒烟集（少量手工构造样例）保证回归。
 
 ### 4.6 内置工具与 tool-agent 子图（D17）
 
@@ -647,7 +655,7 @@ KB_* / LLM_UPSTREAM / LLM_TIMEOUT / RATE_LIMITED / FILE_CONFLICT / INTERNAL`。S
 | GET | `/tasks/{id}/snapshots` | 快照元数据列表（node/batch/items 概要/tokens/usage/model_ref） |
 | GET | `/snapshots/{id}` | 单快照详情（meta：items 含偏移、latencies、usage） |
 | GET | `/snapshots/{id}/items/{position}` | full 模式按偏移读取某条注入知识全文（R13） |
-| POST | `/workspaces/{id}/retrieval/playground` | ad-hoc 检索试验：给定 query/阶段配置/top-K，只走只读检索子图并回显漏斗，不落任务数据（Epic 6 调优，R17） |
+| POST | `/workspaces/{id}/retrieval/playground` | ad-hoc 检索试验：给定 query/阶段配置/top-K，只走 L4 只读管线并回显漏斗，不落任务数据（Epic 6 调优，R17） |
 
 ### 5.6 配置与知识库
 
@@ -687,7 +695,13 @@ testerAgent/
 │   └── dev.sh                   # 一键本地启动（后端 + 前端构建）
 ├── server/
 │   ├── main.py                  # FastAPI 入口，托管 web/dist（含 SPA fallback、/healthz）
-│   ├── memory/                  # L4：嵌入式 ReMe（pool/manager/tools/auto_memory）
+│   ├── context/                 # L4：上下文精准策略
+│   │   ├── …                    # 叶子：三分区 store / assembler / budget / scopes…
+│   │   └── retrieval/           # 检索管线（pipeline / ops / cache）
+│   │       ├── pipeline.py      # retrieve_pipeline：multi_query→…→assemble
+│   │       ├── ops.py / ops_b.py
+│   │       └── cache.py         # RetrievalCache（run 分区 LRU）
+│   ├── memory/                  # L5：嵌入式 ReMe（pool/manager/tools/auto_memory）
 │   ├── runtime/                 # 执行模型（挂 L3）
 │   │   ├── runner.py            # Runner：互斥锁/心跳/取消/后台执行
 │   │   ├── bus.py               # EventBus：进程内 pub/sub
@@ -697,16 +711,16 @@ testerAgent/
 │   ├── api/                     # L2：REST + SSE 路由
 │   │   ├── workspaces.py  agents.py  conversations.py  tasks.py
 │   │   ├── cases.py  kb.py  config.py  traces.py  snapshots.py
-│   ├── graph/                   # L3：LangGraph 控制环 + 能力 + 检索管线
-│   │   ├── registry.py / main_graph.py / control/ / nodes/ / retrieval/
+│   ├── graph/                   # L3：LangGraph 控制环 + 阶段能力（调用 L4）
+│   │   ├── registry.py / main_graph.py / control/ / nodes/
 │   │   └── state.py
-│   ├── eval/                    # 最小离线评测管线（黄金集回归）
-│   ├── adapters/                # L5：协议适配
+│   ├── eval/                    # 最小离线评测管线（复用 L4，黄金集回归）
+│   ├── adapters/                # L6：协议适配
 │   │   ├── reme.py              # Protocol / Caps / Factory / Writer Protocol
 │   │   ├── reme_sdk.py          # SdkReMeReader / SdkReMeWriter / PoolRoutingWriter
 │   │   ├── llm.py               # DeepSeek 客户端：超时/重试/限流/结构化修复
 │   │   └── exporter.py          # MD zip / Excel 汇总（hash 校验）
-│   ├── store/                   # L6
+│   ├── store/                   # L7
 │   │   ├── db.py                # SQLite 连接（WAL）与迁移
 │   │   ├── models.py            # 3.1 各表 DAO（强制 workspace 过滤）
 │   │   └── workspace_files.py   # 原子写入/版本目录/快照偏移读/对账
@@ -734,7 +748,7 @@ testerAgent/
 | D2 | 回退走应用层重跑（派生 run）而非图时间旅行；回退事务内含影响面分析与 checkpoint 切换 | 回退必伴随输入修改；两套状态显式协调，杜绝残留 | US8.3 / R2/R7 |
 | D3 | 用例正文存文件系统，DB 存元数据；先文件后 DB + 原子 rename + Reconciler 对账 | MD 事实源、便于导出；跨源失败可收敛 | Q6 / R1 |
 | D4 | ReMe 读/写拆成两个类，写类仅在确认端点 import 路径上，提案+一次性令牌+幂等键 | 结构上杜绝 agent 擅自写库 | 7 / US1.3 |
-| D5 | 检索子图独立、阶段化配置、全程留痕 | 检索调试面板与归因指标的数据基础 | 6.1 / Epic 6 |
+| D5 | 上下文升为 L4（`server/context/`）：检索管线独立、阶段化配置、全程留痕；L3 只调用不内嵌 | 检索调试面板与归因指标的数据基础；PRD 6.1 可独立调试 | 6.1 / Epic 6 |
 | D6 | 阶段间只传结构化产物，不传对话历史/知识正文/需求原文 | 长程任务上下文不膨胀，checkpoint 不复制大字段 | 6.1 / R11 |
 | D7 | DeepSeek 走 langchain-openai 兼容客户端 | 协议兼容，换模型成本低 | 7 |
 | D8 | 前端构建产物由 FastAPI StaticFiles 托管（单 worker） | 单机一键部署 | 7 |
@@ -745,7 +759,7 @@ testerAgent/
 | D13 | 节点内以批次为最小持久化/取消/重试单元（游标 + 幂等键） | 长节点崩溃不丢全部进度，取消延迟可控 | US8.2 / R3 |
 | D14 | 外部调用统一韧性契约：超时/退避重试/限流/结构化修复；检索每步有显式降级链 | 长程任务高频故障源前置收敛；ReMe 能力缺口不阻断开工 | R4/R9/R20 |
 | D15 | 事件先落 task_event 表再广播，SSE 以 Last-Event-ID 补发 | 断线/重启/多标签页可靠回放 | US6 / R12 |
-| D16 | 一期内置最小离线 eval 管线（复用图组件，黄金集冒烟） | 上下文精准策略的任何调优需可度量、可回归 | 2.2 / Q4 / R5 |
+| D16 | 一期内置最小离线 eval 管线（复用 L4 管线 + 能力节点，黄金集冒烟） | 上下文精准策略的任何调优需可度量、可回归 | 2.2 / Q4 / R5 |
 | D17 | 内置工具走 LangChain Tool + LangGraph ToolNode 子图；不替换用例主图 | 与 harness 语义对齐；对话/产线共享运行时；ReMeWriter 不可达 | 内置工具规格 |
 | D18 | 同进程嵌入 ReMe（一工作区一实例）；废除 HTTP service；对话仅 `memory_search` | 与 QwenPaw 对齐；单 worker + vault 隔离；PRD 7 写门禁不变 | 7 / US1.3 |
 

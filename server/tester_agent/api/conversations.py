@@ -69,6 +69,7 @@ class MessageOut(BaseModel):
 class SendMessageOut(BaseModel):
     user: MessageOut
     assistant: MessageOut | None = None  # set for kind=chat
+    started_task_id: str | None = None  # set when start_case_generation succeeded
 
 
 class TaskSummaryOut(BaseModel):
@@ -214,6 +215,7 @@ async def send_message(
     await conv_dao.touch(conversation_id)  # §5.2 发消息刷新会话 updated_at
 
     assistant_out: MessageOut | None = None
+    started_task_id: str | None = None
     if body.kind == "chat":
         app_ctx = getattr(request.app.state, "app_ctx", None)
         assistant = await run_chat_turn(
@@ -223,8 +225,18 @@ async def send_message(
             user_message=msg,
             memory_pool=getattr(request.app.state, "memory_pool", None),
             context_registry=app_ctx.context_registry if app_ctx is not None else None,
+            runner=getattr(request.app.state, "runner", None),
         )
         assistant_out = _msg_out(assistant)
+        started_task_id = (assistant.payload_dict() or {}).get("started_task_id")
+        if isinstance(started_task_id, str) and started_task_id:
+            pass
+        else:
+            started_task_id = None
         await conv_dao.touch(conversation_id)
 
-    return SendMessageOut(user=_msg_out(msg), assistant=assistant_out)
+    return SendMessageOut(
+        user=_msg_out(msg),
+        assistant=assistant_out,
+        started_task_id=started_task_id,
+    )

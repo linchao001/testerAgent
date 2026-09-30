@@ -1,7 +1,8 @@
 """文件存储（dd §4 §5）：原子写、偏移读、路径安全、哈希。
 
 - 目录布局（dd §4.1）：
-  ``data/workspaces/{workspace_id}/{task_id}/{requirement.md,cases/,snapshots/}``
+  ``{data}/workspaces/{workspace_id}/{task_id}/{requirement.md,cases/,snapshots/}``
+  或工作区 ``root_dir`` 覆盖为 ``{root_dir}/{task_id}/…``。
 - 所有业务路径必须由本模块拼出（禁止业务代码自行 join）；ws/task/stage/node/batch
   走安全段校验，外部传入的 rel_path 经 resolve 后做 task 目录包含校验，越界抛
   ``PathEscapeError``（dd §17.1：编程错误，wrap() 兜底按 INTERNAL 处理）。
@@ -340,10 +341,28 @@ def _parse_text_section(tokens: list[dict[str, Any]]) -> str | None:
 class FileStore:
     def __init__(self, data_dir: Path | str):
         self._root = Path(data_dir).expanduser().resolve()
+        # workspace_id → absolute root override (custom root_dir)
+        self._ws_roots: dict[str, Path] = {}
 
     @property
     def root(self) -> Path:
         return self._root
+
+    def register_workspace_root(self, workspace_id: str, root: Path | str) -> None:
+        """Pin a workspace to an absolute on-disk root (custom ``root_dir``)."""
+        self._safe_segment(workspace_id, "workspace_id")
+        self._ws_roots[workspace_id] = Path(root).expanduser().resolve()
+
+    def unregister_workspace_root(self, workspace_id: str) -> None:
+        self._ws_roots.pop(workspace_id, None)
+
+    def workspace_root(self, ws: str) -> Path:
+        """On-disk root for a workspace (custom override or default layout)."""
+        self._safe_segment(ws, "workspace_id")
+        pinned = self._ws_roots.get(ws)
+        if pinned is not None:
+            return pinned
+        return self._root / "workspaces" / ws
 
     # ---- 路径拼装与安全 ----
 
@@ -354,9 +373,28 @@ class FileStore:
         return value
 
     def _task_dir(self, ws: str, task: str) -> Path:
-        self._safe_segment(ws, "workspace_id")
         self._safe_segment(task, "task_id")
-        return self._root / "workspaces" / ws / task
+        return self.workspace_root(ws) / task
+
+    def _iter_workspace_roots(self) -> list[Path]:
+        """Workspace roots to scan for cleanup (default children + overrides)."""
+        seen: set[Path] = set()
+        out: list[Path] = []
+        for pinned in self._ws_roots.values():
+            rp = pinned.resolve()
+            if rp not in seen and rp.is_dir():
+                seen.add(rp)
+                out.append(rp)
+        base = self._root / "workspaces"
+        if base.is_dir():
+            for child in base.iterdir():
+                if not child.is_dir():
+                    continue
+                rp = child.resolve()
+                if rp not in seen:
+                    seen.add(rp)
+                    out.append(rp)
+        return out
 
     def _resolve_under_task(self, ws: str, task: str, rel_path: str) -> Path:
         """外部 rel_path：resolve 后必须仍在对应 task 目录内（dd §4.1）。"""
@@ -657,27 +695,25 @@ class FileStore:
 
     def _soft_cleanup_sync(self, retention_days: int) -> CleanupReport:
         cutoff = time.time() - int(retention_days) * 86400
-        workspaces = self._root / "workspaces"
         removed = 0
         freed = 0
-        if not workspaces.is_dir():
-            return CleanupReport(0, 0)
-        for path in workspaces.rglob("*"):
-            if not path.is_file() or ".tmp." not in path.name:
-                continue
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
-            if stat.st_mtime >= cutoff:
-                continue
-            size = stat.st_size
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                continue
-            removed += 1
-            freed += size
+        for ws_root in self._iter_workspace_roots():
+            for path in ws_root.rglob("*"):
+                if not path.is_file() or ".tmp." not in path.name:
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if stat.st_mtime >= cutoff:
+                    continue
+                size = stat.st_size
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    continue
+                removed += 1
+                freed += size
         return CleanupReport(removed, freed)
 
     async def cleanup_exports(self, retention_days: int) -> CleanupReport:
@@ -690,48 +726,49 @@ class FileStore:
 
     def _cleanup_exports_sync(self, retention_days: int) -> CleanupReport:
         cutoff = time.time() - int(retention_days) * 86400
-        workspaces = self._root / "workspaces"
         removed = 0
         freed = 0
-        if not workspaces.is_dir():
-            return CleanupReport(0, 0)
-        # 路径对齐 FileStore._task_dir：workspaces/{ws}/{task}/exports/
-        # （WP-X2 实测修正：旧实现误扫 */tasks/*，与真实落盘不一致）
-        for exports in workspaces.glob("*/*/exports"):
-            if not exports.is_dir():
-                continue
-            for job_dir in exports.iterdir():
-                if not job_dir.is_dir():
+        # 路径对齐 FileStore._task_dir：{workspace_root}/{task}/exports/
+        for ws_root in self._iter_workspace_roots():
+            for exports in ws_root.glob("*/exports"):
+                if not exports.is_dir():
                     continue
-                try:
-                    stat = job_dir.stat()
-                except OSError:
-                    continue
-                if stat.st_mtime >= cutoff:
-                    continue
-                # 统计目录内文件大小后删除
-                try:
-                    files = [p for p in job_dir.rglob("*") if p.is_file()]
-                except OSError:
-                    files = []
-                for f in files:
+                for job_dir in exports.iterdir():
+                    if not job_dir.is_dir():
+                        continue
                     try:
-                        freed += f.stat().st_size
-                        f.unlink()
-                        removed += 1
+                        stat = job_dir.stat()
                     except OSError:
                         continue
-                try:
-                    job_dir.rmdir()
-                except OSError:
-                    pass
+                    if stat.st_mtime >= cutoff:
+                        continue
+                    # 统计目录内文件大小后删除
+                    try:
+                        files = [p for p in job_dir.rglob("*") if p.is_file()]
+                    except OSError:
+                        files = []
+                    for f in files:
+                        try:
+                            freed += f.stat().st_size
+                            f.unlink()
+                            removed += 1
+                        except OSError:
+                            continue
+                    try:
+                        job_dir.rmdir()
+                    except OSError:
+                        pass
         return CleanupReport(removed, freed)
 
     # ---- 内部工具 ----
 
     def _posix_rel_root(self, target: Path) -> str:
-        """相对 data/（FileRef.path，dd §2.9）。"""
-        return target.resolve().relative_to(self._root).as_posix()
+        """相对 data/（FileRef.path，dd §2.9）；越出 data 时回落绝对路径。"""
+        resolved = target.resolve()
+        try:
+            return resolved.relative_to(self._root).as_posix()
+        except ValueError:
+            return resolved.as_posix()
 
     def _posix_rel_task(self, ws: str, task: str, target: Path) -> str:
         """相对任务目录（用例/快照 rel_path：cases/..、snapshots/..，dd §4.1）。"""

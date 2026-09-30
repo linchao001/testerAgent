@@ -43,6 +43,16 @@ BUILTIN_AGENT_CONFIG = {
     "retrieval_overrides": {},
     "enable_tools_stages": [],
 }
+def _default_context_profiles() -> dict[str, dict[str, int]]:
+    """与 context.budget.PROFILES 同源（懒导入，避免模块顶层环依赖）。"""
+    from ..context.budget import PROFILES
+
+    return {
+        name.value: {"p0": b.p0, "p1": b.p1, "p2": b.p2}
+        for name, b in PROFILES.items()
+    }
+
+
 DEFAULT_RUNTIME_CONFIG = {
     "llm_concurrency": 4,
     "llm_timeout_connect_sec": 10,
@@ -76,6 +86,16 @@ DEFAULT_RUNTIME_CONFIG = {
     "reflect_max_per_step": 2,
     "replan_max": 3,
     "subtask_timeout_sec": 600,
+    # 上下文管理层（spec §8 / plan §10）；关闭时消费点退回旧路径
+    "context.enabled": True,
+    "context.policy_version": "cp-v1",
+    "context.step_window": 1,
+    "context.chat_recent_turns": 6,
+    "context.goal_overlap_floor": 0.05,
+    "context.goal_drift_window": 5,
+    "context.case_index_digest": False,
+    "context.intervention.enabled": True,
+    "context.profiles": _default_context_profiles(),
 }
 
 

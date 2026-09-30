@@ -35,7 +35,7 @@ from .runner import CaseReport, run_case
 
 # config-diff 允许覆盖的 RetrievalConfig 字段（stage/batch_unit_id 不可覆盖：
 # stage 由用例决定，batch_unit_id 与检索冒烟无关）
-_DIFFABLE = {
+_RETRIEVAL_DIFFABLE = {
     "query_paths",
     "recall_topk",
     "inject_limit",
@@ -43,6 +43,12 @@ _DIFFABLE = {
     "allowed_types",
     "token_budget",
 }
+# WP-32：上下文开关（不进入 RetrievalConfig；对比时检索面字节不变，护栏看
+# reference_rate / clause_coverage 不劣化）
+_CONTEXT_DIFFABLE = {
+    "context.enabled",
+}
+_DIFFABLE = _RETRIEVAL_DIFFABLE | _CONTEXT_DIFFABLE
 
 _RATIO_COLS = ("recall_hit", "inject_hit", "reference_rate", "clause_coverage")
 _INT_COLS = ("aux_tokens", "main_tokens", "wall_ms", "degraded_steps")
@@ -78,12 +84,18 @@ def _parse_diff(raw: str | None) -> dict | None:
 
 
 def _build_cfg(stage: str, diff: dict | None) -> RetrievalConfig:
-    """按阶段取 §8.1 预设并套用 config-diff（经模型校验，含 allowed_types 落型）。"""
+    """按阶段取 §8.1 预设并套用 config-diff（经模型校验，含 allowed_types 落型）。
+
+    ``context.*`` 键仅作对照标记，不写入 RetrievalConfig。
+    """
     cfg = RETRIEVAL_PRESETS[stage]
     if not diff:
         return cfg
+    retrieval_diff = {k: v for k, v in diff.items() if k in _RETRIEVAL_DIFFABLE}
+    if not retrieval_diff:
+        return cfg
     data = cfg.model_dump()
-    data.update(diff)
+    data.update(retrieval_diff)
     return RetrievalConfig.model_validate(data)
 
 
@@ -175,21 +187,57 @@ def _render(
 
 
 def _verdict(
-    base: list[CaseReport], variant: list[CaseReport], threshold: float
+    base: list[CaseReport],
+    variant: list[CaseReport],
+    threshold: float,
+    *,
+    diff: dict | None = None,
 ) -> tuple[str, int]:
-    """mean inject_hit 跌幅超阈值 → REGRESSION + 退出码 1（dd §15.3 CI 阻断口径）。"""
+    """mean inject_hit 跌幅超阈值 → REGRESSION + 退出码 1（dd §15.3 CI 阻断口径）。
+
+    WP-32：含 ``context.enabled`` 的 config-diff 额外校验——
+    reference_rate 均值下降 ≤5%、clause_coverage 均值不降。
+    """
+    notes: list[str] = []
     mb = _mean([r.inject_hit for r in base])
     mv = _mean([r.inject_hit for r in variant])
     if mb is None or mv is None:
-        return "verdict: OK（inject_hit 无有效样本，跳过阈值判定）", 0
-    delta = mv - mb
-    if delta < threshold:
-        return (
-            f"verdict: REGRESSION inject_hit mean Δ={delta * 100:+.1f}pt "
-            f"(< {threshold * 100:.1f}pt)",
-            1,
-        )
-    return f"verdict: OK inject_hit mean Δ={delta * 100:+.1f}pt", 0
+        notes.append("inject_hit 无有效样本，跳过阈值判定")
+        code = 0
+    else:
+        delta = mv - mb
+        if delta < threshold:
+            return (
+                f"verdict: REGRESSION inject_hit mean Δ={delta * 100:+.1f}pt "
+                f"(< {threshold * 100:.1f}pt)",
+                1,
+            )
+        notes.append(f"inject_hit mean Δ={delta * 100:+.1f}pt")
+        code = 0
+
+    if diff and "context.enabled" in diff:
+        rb = _mean([r.reference_rate for r in base])
+        rv = _mean([r.reference_rate for r in variant])
+        cb = _mean([r.clause_coverage for r in base])
+        cv = _mean([r.clause_coverage for r in variant])
+        if rb is not None and rv is not None and (rv - rb) < -0.05:
+            return (
+                f"verdict: REGRESSION reference_rate mean Δ={(rv - rb) * 100:+.1f}pt "
+                f"(context.enabled 护栏 ≤-5pt)",
+                1,
+            )
+        if cb is not None and cv is not None and cv < cb - 1e-12:
+            return (
+                f"verdict: REGRESSION clause_coverage mean {cb:.3f}->{cv:.3f} "
+                f"(context.enabled 护栏禁止下降)",
+                1,
+            )
+        if rb is not None and rv is not None:
+            notes.append(f"reference_rate mean Δ={(rv - rb) * 100:+.1f}pt")
+        if cb is not None and cv is not None:
+            notes.append(f"clause_coverage mean {cb:.3f}->{cv:.3f}")
+
+    return f"verdict: OK ({'; '.join(notes)})", code
 
 
 # ---------- CLI ----------
@@ -245,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     if variant is None:
         print("verdict: OK（单次基线运行，无对比）")
         return 0
-    verdict, code = _verdict(base, variant, args.threshold_inject_hit)
+    verdict, code = _verdict(base, variant, args.threshold_inject_hit, diff=diff)
     print(verdict)
     return code
 

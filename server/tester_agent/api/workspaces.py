@@ -3,6 +3,10 @@
 - CRUD + 软删除：软删行与不存在同等待遇（404 不暴露存在性，WorkspaceDAO 已保证）；
   删除守卫"需确认无活跃任务"→ 有活跃任务 409 TASK_STATE_CONFLICT；
   文件按保留期惰性清理（§6.5/WP-29），本端点只置 deleted_at；
+- ``root_dir``：空=默认 ``{data}/workspaces/{id}/``；非空须绝对路径；
+  解析冲突 400；已有任务时改目录 409；
+- 创建/更新 kb_config 后立即 ``memory_pool.get_or_start``（与 lifespan 预热对齐）；
+  软删时 ``invalidate`` 关掉该工作区嵌入实例；
 - POST /workspaces/{id}/kb/test：只读探活（factory.probe 一次性连接探测 +
   能力位，dd §8.4），失败按 AppError 类属性映射 HTTP（KbUnreachable→502，
   dd §17.1 为 HTTP 映射唯一来源）；未注册 mode → 400（真实 ReMe 适配
@@ -13,13 +17,20 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
+from pathlib import Path
+from typing import Any
+
 from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
-from ..errors import TaskStateConflict
-from ..store.models import TaskDAO, WorkspaceDAO, WorkspaceRow
+from ..errors import TaskStateConflict, ValidationError
+from ..store.models import ConfigDAO, TaskDAO, WorkspaceDAO, WorkspaceRow
+from ..store.paths import normalize_root_dir, resolve_workspace_root
 from .common import checked_cursor, page_response
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["workspaces"])
 
@@ -53,12 +64,14 @@ class KbConfigIn(BaseModel):
 class CreateWorkspaceIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = ""
+    root_dir: str = ""
     kb_config: KbConfigIn
 
 
 class UpdateWorkspaceIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     description: str | None = None
+    root_dir: str | None = None
     kb_config: KbConfigIn | None = None
 
 
@@ -66,6 +79,7 @@ class WorkspaceOut(BaseModel):
     id: str
     name: str
     description: str
+    root_dir: str
     kb_config: dict
     created_at: str
 
@@ -82,6 +96,7 @@ def _out(ws: WorkspaceRow) -> WorkspaceOut:
         id=ws.id,
         name=ws.name,
         description=ws.description,
+        root_dir=ws.root_dir or "",
         kb_config=ws.kb_config_obj(),
         created_at=ws.created_at,
     )
@@ -89,6 +104,79 @@ def _out(ws: WorkspaceRow) -> WorkspaceOut:
 
 def _dao(request: Request) -> WorkspaceDAO:
     return WorkspaceDAO(request.app.state.db)
+
+
+def _data_dir(request: Request) -> Path:
+    return Path(request.app.state.settings.data_dir)
+
+
+async def _model_config(request: Request) -> dict[str, Any]:
+    try:
+        return (await ConfigDAO(request.app.state.db).get()).model_dict()
+    except Exception:
+        return {}
+
+
+def _bind_workspace_paths(
+    request: Request, workspace_id: str, root_dir: str
+) -> Path:
+    """Register FileStore/MemoryPool roots; mkdir; return resolved root."""
+    data_dir = _data_dir(request)
+    root = resolve_workspace_root(data_dir, workspace_id, root_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    store = getattr(request.app.state, "file_store", None)
+    if store is not None:
+        if root_dir:
+            store.register_workspace_root(workspace_id, root)
+        else:
+            store.unregister_workspace_root(workspace_id)
+    pool = getattr(request.app.state, "memory_pool", None)
+    if pool is not None:
+        if root_dir:
+            pool.register_workspace_root(workspace_id, root)
+        else:
+            pool.unregister_workspace_root(workspace_id)
+    return root
+
+
+async def _assert_root_unique(
+    request: Request,
+    *,
+    workspace_id: str,
+    root_dir: str,
+) -> None:
+    data_dir = _data_dir(request)
+    resolved = resolve_workspace_root(data_dir, workspace_id, root_dir)
+    for other in await _dao(request).list_all():
+        if other.id == workspace_id:
+            continue
+        other_root = resolve_workspace_root(
+            data_dir, other.id, other.root_dir or ""
+        )
+        if other_root == resolved:
+            raise ValidationError(
+                "数据目录已被其他工作区占用",
+                details={
+                    "root_dir": str(resolved),
+                    "conflict_workspace_id": other.id,
+                },
+            )
+
+
+async def _warm_workspace(
+    request: Request, workspace_id: str, kb_config: dict
+) -> None:
+    pool = getattr(request.app.state, "memory_pool", None)
+    if pool is None:
+        return
+    try:
+        await pool.get_or_start(
+            workspace_id,
+            kb_config,
+            model_config=await _model_config(request),
+        )
+    except Exception:
+        logger.exception("ReMe start failed for ws=%s", workspace_id)
 
 
 @router.get("/workspaces")
@@ -107,13 +195,19 @@ async def list_workspaces(
 async def create_workspace(
     body: CreateWorkspaceIn, request: Request, response: Response
 ) -> WorkspaceOut:
+    root_dir = normalize_root_dir(body.root_dir)
+    ws_id = uuid.uuid4().hex
+    await _assert_root_unique(request, workspace_id=ws_id, root_dir=root_dir)
     ws = WorkspaceRow.create(
-        id=uuid.uuid4().hex,
+        id=ws_id,
         name=body.name,
         description=body.description,
         kb_config=body.kb_config.model_dump(),
+        root_dir=root_dir,
     )
     await _dao(request).create(ws)
+    _bind_workspace_paths(request, ws.id, root_dir)
+    await _warm_workspace(request, ws.id, ws.kb_config_obj())
     response.headers["Location"] = f"/api/v1/workspaces/{ws.id}"
     return _out(ws)
 
@@ -127,6 +221,7 @@ async def get_workspace(workspace_id: str, request: Request) -> WorkspaceOut:
 async def update_workspace(
     workspace_id: str, body: UpdateWorkspaceIn, request: Request
 ) -> WorkspaceOut:
+    current = await _dao(request).get(workspace_id)
     updates: dict = {}
     if body.name is not None:
         updates["name"] = body.name
@@ -134,13 +229,39 @@ async def update_workspace(
         updates["description"] = body.description
     if body.kb_config is not None:
         updates["kb_config"] = body.kb_config.model_dump()
+    if body.root_dir is not None:
+        new_root = normalize_root_dir(body.root_dir)
+        if new_root != (current.root_dir or ""):
+            tasks = await TaskDAO(request.app.state.db).list_all_by_workspace(
+                workspace_id
+            )
+            if tasks:
+                raise TaskStateConflict(
+                    "工作区已有任务，无法更改数据目录",
+                    details={"workspace_id": workspace_id},
+                )
+            await _assert_root_unique(
+                request, workspace_id=workspace_id, root_dir=new_root
+            )
+            updates["root_dir"] = new_root
     await _dao(request).update(workspace_id, **updates)
+    if "root_dir" in updates:
+        _bind_workspace_paths(request, workspace_id, updates["root_dir"])
     pool = getattr(request.app.state, "memory_pool", None)
     if pool is not None and body.kb_config is not None:
         await pool.invalidate(workspace_id)
         factory = getattr(request.app.state, "reme_factory", None)
         if factory is not None:
             await factory.invalidate(workspace_id)
+        await _warm_workspace(request, workspace_id, body.kb_config.model_dump())
+    elif pool is not None and "root_dir" in updates:
+        await pool.invalidate(workspace_id)
+        factory = getattr(request.app.state, "reme_factory", None)
+        if factory is not None:
+            await factory.invalidate(workspace_id)
+        await _warm_workspace(
+            request, workspace_id, (await _dao(request).get(workspace_id)).kb_config_obj()
+        )
     return _out(await _dao(request).get(workspace_id))
 
 
@@ -155,6 +276,16 @@ async def delete_workspace(workspace_id: str, request: Request) -> dict:
             details={"workspace_id": workspace_id},
         )
     await dao.soft_delete(workspace_id)
+    store = getattr(request.app.state, "file_store", None)
+    if store is not None:
+        store.unregister_workspace_root(workspace_id)
+    pool = getattr(request.app.state, "memory_pool", None)
+    if pool is not None:
+        pool.unregister_workspace_root(workspace_id)
+        await pool.invalidate(workspace_id)
+    factory = getattr(request.app.state, "reme_factory", None)
+    if factory is not None:
+        await factory.invalidate(workspace_id)
     return {"ok": True}
 
 

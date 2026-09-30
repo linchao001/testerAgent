@@ -9,6 +9,7 @@ let workspace: Workspace = {
   id: 'ws-f1',
   name: '默认工作区',
   description: '',
+  root_dir: '',
   kb_config: {
     kb_id: 'zhb_kb',
     options: {},
@@ -48,10 +49,11 @@ export function resetChatMockState() {
     id: 'ws-f1',
     name: '默认工作区',
     description: '',
-      kb_config: {
-        kb_id: 'zhb_kb',
-        options: {},
-      },
+    root_dir: '',
+    kb_config: {
+      kb_id: 'zhb_kb',
+      options: {},
+    },
     created_at: now(),
   }
   conversationId = 'conv-f1'
@@ -73,12 +75,14 @@ export const chatHandlers = [
     const body = (await request.json()) as {
       name: string
       description?: string
+      root_dir?: string
       kb_config: Workspace['kb_config']
     }
     workspace = {
       id: 'ws-f1-new',
       name: body.name,
       description: body.description ?? '',
+      root_dir: body.root_dir ?? '',
       kb_config: body.kb_config,
       created_at: now(),
     }
@@ -126,18 +130,56 @@ export const chatHandlers = [
       payload: body.context ?? {},
     })
     let assistant = null
+    let started_task_id: string | null = null
     if ((body.kind ?? 'chat') === 'chat') {
+      const wantsStart =
+        !task &&
+        /开始生成|生成用例|start_case/i.test(body.content) &&
+        body.content.trim().length > 8
+      if (wantsStart) {
+        task = {
+          id: 'task-f1',
+          workspace_id: workspace.id,
+          conversation_id: String(params.id),
+          status: 'running',
+          current_stage: 'intake',
+          active_artifacts: {},
+          progress: {},
+          error_info: null,
+          stale: false,
+          created_at: now(),
+          updated_at: now(),
+        }
+        started_task_id = task.id
+      }
       assistant = pushMessage({
         conversation_id: String(params.id),
         task_id: task?.id ?? null,
         role: 'assistant',
         kind: 'chat',
-        content: '（mock）已收到。',
+        content: started_task_id
+          ? '已创建任务并启动四阶段生成。'
+          : '（mock）已收到。',
         ref_artifact_id: null,
-        payload: { tool_trace: [] },
+        payload: {
+          tool_trace: started_task_id
+            ? [
+                {
+                  tool: 'start_case_generation',
+                  ok: true,
+                  latency_ms: 5,
+                  args_digest: 'mockdigest000001',
+                },
+              ]
+            : [],
+          ...(started_task_id ? { started_task_id } : {}),
+        },
       })
     }
-    return HttpResponse.json({ user, assistant }, { status: 201 })
+    return HttpResponse.json(
+      { user, assistant, started_task_id },
+      { status: 201 },
+    )
   }),
 
   http.post('/api/v1/tasks', async ({ request }) => {

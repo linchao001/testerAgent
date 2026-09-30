@@ -132,3 +132,5 @@ class ContextView(BaseModel):
     goal: str | None
     entries: list[ContextEntry]
     totals: dict
+    # journal 落库失败滞留时非 None：``{journal_pending: N}``；不阻断读路径
+    degraded: dict | None = None

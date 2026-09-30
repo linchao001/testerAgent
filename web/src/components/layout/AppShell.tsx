@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { ErrorBanner } from '../common/ErrorBanner'
 import { ReconnectBanner } from '../common/ReconnectBanner'
 
@@ -11,10 +11,21 @@ const NAV: { to: string; label: string; end?: boolean }[] = [
   { to: '/settings', label: '设置' },
 ]
 
-export function AppShell() {
+function isChatRoute(pathname: string): boolean {
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="border-b border-stone-200 bg-white">
+    pathname === '/' ||
+    pathname === '/session' ||
+    pathname === '/chat'
+  )
+}
+
+export function AppShell() {
+  const { pathname } = useLocation()
+  const chat = isChatRoute(pathname)
+
+  return (
+    <div className="flex h-screen flex-col overflow-hidden">
+      <header className="shrink-0 border-b border-stone-200 bg-white">
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-4 py-3">
           <div className="text-base font-semibold tracking-tight text-stone-900">
             TesterAgent
@@ -42,7 +53,13 @@ export function AppShell() {
       </header>
       <ReconnectBanner />
       <ErrorBanner />
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">
+      <main
+        className={
+          chat
+            ? 'mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col px-4'
+            : 'mx-auto min-h-0 w-full max-w-6xl flex-1 overflow-y-auto px-4 py-6'
+        }
+      >
         <Outlet />
       </main>
     </div>

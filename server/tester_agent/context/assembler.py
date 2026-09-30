@@ -55,7 +55,11 @@ async def assemble(
     goal_drift_window: int = 5,
     budget_override: ProfileBudget | None = None,
 ) -> AssemblyResult:
-    budget = budget_override or PROFILES[profile]
+    budget = (
+        budget_override
+        or getattr(store, "budget_overrides", {}).get(profile)
+        or PROFILES[profile]
+    )
     validate_budget(budget, model_window=model_window)
     s = scope or current_scope()
     goal_text = goal if goal is not None else (store.goal_text() or "")

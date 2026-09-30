@@ -68,8 +68,6 @@ describe('WP-F5 WorkspacesPage', () => {
 
     await user.clear(screen.getByLabelText('名称'))
     await user.type(screen.getByLabelText('名称'), '新业务区')
-    await user.clear(screen.getByLabelText('服务地址'))
-    await user.type(screen.getByLabelText('服务地址'), 'http://127.0.0.1:9000')
     await user.clear(screen.getByLabelText('知识库 ID'))
     await user.type(screen.getByLabelText('知识库 ID'), 'demo_kb')
     await user.click(screen.getByTestId('ws-save-btn'))
@@ -85,6 +83,22 @@ describe('WP-F5 WorkspacesPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('agent-bind-builtin-case-designer')).toBeChecked()
     })
+  })
+
+  it('可填写数据目录并创建', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByTestId('workspaces-page')
+    await user.click(screen.getByTestId('ws-new-btn'))
+    await user.clear(screen.getByLabelText('名称'))
+    await user.type(screen.getByLabelText('名称'), '自定义目录区')
+    await user.clear(screen.getByLabelText('数据目录'))
+    await user.type(screen.getByLabelText('数据目录'), 'D:\\ws\\custom')
+    await user.click(screen.getByTestId('ws-save-btn'))
+    await waitFor(() => {
+      expect(useSession.getState().workspaceId).toMatch(/^ws-new-/)
+    })
+    expect(screen.getByLabelText('数据目录')).toHaveValue('D:\\ws\\custom')
   })
 
   it('删除有活跃任务的工作区时 ErrorBanner 展示 TASK_STATE_CONFLICT', async () => {

@@ -1162,10 +1162,14 @@ class WorkspaceRow:
     kb_config: str = "{}"
     created_at: str = ""
     deleted_at: str | None = None
+    root_dir: str = ""
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "WorkspaceRow":
-        return cls(**{f.name: row[f.name] for f in fields(cls)})
+        keys = {f.name for f in fields(cls)}
+        data = {k: row[k] for k in row.keys() if k in keys}
+        data.setdefault("root_dir", "")
+        return cls(**data)
 
     @classmethod
     def create(
@@ -1175,6 +1179,7 @@ class WorkspaceRow:
         name: str,
         description: str = "",
         kb_config: dict | None = None,
+        root_dir: str = "",
         now: str | None = None,
     ) -> "WorkspaceRow":
         return cls(
@@ -1182,6 +1187,7 @@ class WorkspaceRow:
             name=name,
             description=description,
             kb_config=_dumps(kb_config or {}),
+            root_dir=root_dir or "",
             created_at=now or utcnow_iso(),
         )
 
@@ -1193,15 +1199,23 @@ class WorkspaceDAO:
     def __init__(self, db: Database):
         self._db = db
 
-    _COLUMNS = "id, name, description, kb_config, created_at, deleted_at"
+    _COLUMNS = "id, name, description, kb_config, created_at, deleted_at, root_dir"
 
     async def create(self, ws: WorkspaceRow) -> None:
         if not ws.created_at:
             ws.created_at = utcnow_iso()
         await self._db.aexecute(
-            "INSERT INTO workspace (id, name, description, kb_config, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (ws.id, ws.name, ws.description, ws.kb_config, ws.created_at),
+            "INSERT INTO workspace "
+            "(id, name, description, kb_config, created_at, root_dir) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                ws.id,
+                ws.name,
+                ws.description,
+                ws.kb_config,
+                ws.created_at,
+                ws.root_dir or "",
+            ),
         )
 
     async def get(self, workspace_id: str, *, include_deleted: bool = False) -> WorkspaceRow:
@@ -1239,6 +1253,7 @@ class WorkspaceDAO:
         name: str | object = _UNSET,
         description: str | object = _UNSET,
         kb_config: dict | object = _UNSET,
+        root_dir: str | object = _UNSET,
     ) -> None:
         sets: list[str] = []
         params: list[Any] = []
@@ -1251,6 +1266,9 @@ class WorkspaceDAO:
         if kb_config is not _UNSET:
             sets.append("kb_config = ?")
             params.append(_dumps(kb_config))
+        if root_dir is not _UNSET:
+            sets.append("root_dir = ?")
+            params.append(root_dir)
         if not sets:
             return
         params.append(workspace_id)
@@ -2284,3 +2302,183 @@ class ConfigDAO:
         )
         if res.rowcount == 0:
             raise NotFoundError("配置不存在：app.db 尚未初始化（请先 init-db）")
+
+
+# ---------- context_journal（WP-32 / 005） ----------
+
+
+@dataclass
+class ContextJournalRow:
+    """context_journal 行（仅动作元数据 + digest，无正文）。"""
+
+    id: str
+    workspace_id: str
+    owner_type: str
+    owner_id: str
+    partition: str
+    entry_id: str
+    entry_kind: str
+    action: str
+    reason: str
+    policy_version: str
+    created_at: str
+    task_id: str | None = None
+    conversation_id: str | None = None
+    tokens_est: int = 0
+    digest: str = ""
+    refs: str = "{}"
+    scope_level: str = "task"
+    phase: str = "shared"
+    step_id: str | None = None
+    batch_id: str | None = None
+    item_key: str | None = None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> ContextJournalRow:
+        return cls(**{f.name: row[f.name] for f in fields(cls)})
+
+    @classmethod
+    def from_record(cls, record: Any) -> ContextJournalRow:
+        """从 context.journal.JournalRecord（或同形对象）转换。"""
+        refs = getattr(record, "refs", {}) or {}
+        refs_s = refs if isinstance(refs, str) else _dumps(refs)
+        return cls(
+            id=record.id,
+            workspace_id=record.workspace_id,
+            owner_type=str(record.owner_type),
+            owner_id=record.owner_id,
+            task_id=record.task_id,
+            conversation_id=record.conversation_id,
+            partition=record.partition,
+            entry_id=record.entry_id,
+            entry_kind=record.entry_kind,
+            action=record.action,
+            reason=record.reason,
+            policy_version=record.policy_version,
+            tokens_est=int(getattr(record, "tokens_est", 0) or 0),
+            digest=getattr(record, "digest", "") or "",
+            refs=refs_s,
+            scope_level=getattr(record, "scope_level", "task") or "task",
+            phase=getattr(record, "phase", "shared") or "shared",
+            step_id=getattr(record, "step_id", None),
+            batch_id=getattr(record, "batch_id", None),
+            item_key=getattr(record, "item_key", None),
+            created_at=record.created_at,
+        )
+
+    def refs_obj(self) -> dict:
+        return _loads(self.refs, {})
+
+
+class ContextJournalDAO:
+    """上下文 journal DAO：INSERT OR IGNORE + key-set 分页 + 升序重放。"""
+
+    def __init__(self, db: Database):
+        self._db = db
+
+    _COLUMNS = (
+        "id, workspace_id, owner_type, owner_id, task_id, conversation_id, "
+        "partition, entry_id, entry_kind, action, reason, policy_version, "
+        "tokens_est, digest, refs, scope_level, phase, step_id, batch_id, "
+        "item_key, created_at"
+    )
+
+    async def put_batch(self, rows: list[ContextJournalRow]) -> None:
+        """幂等写入：同 id INSERT OR IGNORE；created_at 仅首次落库保留。"""
+        if not rows:
+            return
+        params = []
+        for r in rows:
+            if not r.created_at:
+                r.created_at = utcnow_iso()
+            if not r.refs:
+                r.refs = "{}"
+            params.append(
+                (
+                    r.id,
+                    r.workspace_id,
+                    r.owner_type,
+                    r.owner_id,
+                    r.task_id,
+                    r.conversation_id,
+                    r.partition,
+                    r.entry_id,
+                    r.entry_kind,
+                    r.action,
+                    r.reason,
+                    r.policy_version,
+                    r.tokens_est,
+                    r.digest,
+                    r.refs,
+                    r.scope_level,
+                    r.phase,
+                    r.step_id,
+                    r.batch_id,
+                    r.item_key,
+                    r.created_at,
+                )
+            )
+        await self._db.aexecutemany(
+            "INSERT OR IGNORE INTO context_journal (" + self._COLUMNS + ") "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            params,
+        )
+
+    async def record(self, records: list[Any]) -> None:
+        """JournalSink 适配：接受 JournalRecord 列表并 put_batch。"""
+        if not records:
+            return
+        await self.put_batch([ContextJournalRow.from_record(r) for r in records])
+
+    async def list_by_owner(
+        self,
+        *,
+        workspace_id: str,
+        owner_type: str,
+        owner_id: str,
+        cursor: str | None,
+        limit: int,
+        partition: str | None = None,
+        actions: list[str] | None = None,
+    ) -> Page[ContextJournalRow]:
+        """key-set 倒序分页；workspace_id 强制过滤。
+
+        ``actions`` 非空时仅返回所列动作（evictions 端点用 demote/evict/…）。
+        """
+        base = (
+            "SELECT " + self._COLUMNS + " FROM context_journal "
+            "WHERE workspace_id = ? AND owner_type = ? AND owner_id = ?"
+        )
+        params: list[Any] = [workspace_id, owner_type, owner_id]
+        if partition is not None:
+            base += " AND partition = ?"
+            params.append(partition)
+        if actions:
+            placeholders = ",".join("?" for _ in actions)
+            base += f" AND action IN ({placeholders})"
+            params.extend(actions)
+        return await _fetch_page(
+            self._db,
+            base,
+            params,
+            ts_col="created_at",
+            limit=limit,
+            cursor=cursor,
+            row_cls=ContextJournalRow,
+        )
+
+    async def list_actions(
+        self,
+        *,
+        workspace_id: str,
+        owner_type: str,
+        owner_id: str,
+    ) -> list[ContextJournalRow]:
+        """rebuild 重放：按 (created_at, id) 升序全量；workspace 强制过滤。"""
+        rows = await self._db.aquery(
+            "SELECT " + self._COLUMNS + " FROM context_journal "
+            "WHERE workspace_id = ? AND owner_type = ? AND owner_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (workspace_id, owner_type, owner_id),
+        )
+        return [ContextJournalRow.from_row(r) for r in rows]

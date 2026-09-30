@@ -79,10 +79,9 @@ class RetrievalOutcome(BaseModel):
 
 
 # ---------- token 估算（dd §8.2：中英混合） ----------
-# WP-30：实现平移至 context 叶子层（context/tokens.py），此处保留 re-export，
-# 既有 import 路径（tester_agent.graph.retrieval.ops_b.estimate_tokens）零变化。
+# 实现在同层 context/tokens.py；此处 re-export 供检索算子与测试沿用旧符号名。
 
-from ...context.tokens import estimate_tokens  # noqa: E402,F401
+from ..tokens import estimate_tokens  # noqa: E402,F401
 
 
 # ---------- rerank（dd §8.2：>30 分桶；LLM 失败 → 规则分） ----------

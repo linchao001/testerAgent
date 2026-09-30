@@ -27,7 +27,7 @@ from tester_agent.adapters.reme import (
 )
 from tester_agent.domain import EntryType, RetrievalConfig
 from tester_agent.errors import LLMUpstreamError
-from tester_agent.graph.retrieval.pipeline import (
+from tester_agent.context.retrieval.pipeline import (
     close_retrieval_trace,
     retrieve_pipeline,
 )

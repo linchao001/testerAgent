@@ -122,3 +122,60 @@ async def test_pool_get_or_start_caches_and_invalidate(tmp_path: Path):
 
     await pool.shutdown_all()
     assert created[1].closed
+
+
+@pytest.mark.asyncio
+async def test_pool_start_all_warms_every_workspace(tmp_path: Path):
+    created: list[FakeReMeApp] = []
+
+    def factory(workspace_id, vault_dir, kb_config, **kwargs):
+        app = FakeReMeApp()
+        created.append(app)
+        return ReMeMemoryManager(
+            workspace_id=workspace_id,
+            vault_dir=vault_dir,
+            kb_config=kb_config,
+            reme_ctor=lambda **kw: app,
+            **{k: v for k, v in kwargs.items() if k in ("model_config",)},
+        )
+
+    pool = WorkspaceMemoryPool(tmp_path, manager_factory=factory)
+    results = await pool.start_all(
+        [
+            ("ws-a", {"kb_id": "kb-a", "options": {}}),
+            ("ws-b", {"kb_id": "", "options": {}}),
+        ],
+        model_config={"api_key": "x"},
+    )
+    assert results == {"ws-a": True, "ws-b": True}
+    assert len(created) == 2
+    assert all(app.is_started for app in created)
+
+    # Idempotent: second warm-start hits cache
+    again = await pool.start_all(
+        [("ws-a", {"kb_id": "kb-a", "options": {}})],
+    )
+    assert again == {"ws-a": True}
+    assert len(created) == 2
+
+    await pool.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_pool_start_all_records_failure_without_raising(tmp_path: Path):
+    class BoomReMe(FakeReMeApp):
+        async def start(self) -> None:
+            raise RuntimeError("boom")
+
+    def factory(workspace_id, vault_dir, kb_config, **kwargs):
+        app = BoomReMe()
+        return ReMeMemoryManager(
+            workspace_id=workspace_id,
+            vault_dir=vault_dir,
+            kb_config=kb_config,
+            reme_ctor=lambda **kw: app,
+        )
+
+    pool = WorkspaceMemoryPool(tmp_path, manager_factory=factory)
+    results = await pool.start_all([("ws-x", {"kb_id": "k", "options": {}})])
+    assert results == {"ws-x": False}

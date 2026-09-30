@@ -59,6 +59,10 @@ class ContextStore:
         self.degraded_journal: list[JournalRecord] = []
         # 组装冻结（WP-33 freeze 指令置位；assembler 读取跳过裁剪）
         self.frozen: bool = False
+        # 终态 owner（任务 completed/failed/aborted）写干预拒绝；API 置位
+        self.closed: bool = False
+        # 运行时预算覆盖（WP-33 budget 指令；assemble 优先取用）
+        self.budget_overrides: dict[Any, Any] = {}
         # P0 引导段版本（bind_p0 注入；assembler 写入 AssemblyReport）
         self.p0_version: str = ""
 
@@ -71,11 +75,17 @@ class ContextStore:
     async def append(
         self, entry: ContextEntry, *, scope: Any | None = None
     ) -> bool:
-        """追加条目；同 entry_id 已存在则忽略返回 False（不覆盖、不写 journal）。"""
+        """追加条目；同 entry_id 已存在则忽略返回 False（不覆盖、不写 journal）。
+
+        ``scope`` 缺省时取 :func:`current_scope`（wrap/invoke 压栈的标签），
+        条目产生即定性（spec §15.6 防线 1）。
+        """
+        from .scopes import current_scope
+
         async with self._lock:
             if entry.entry_id in self._entries:
                 return False
-            e = self._inherit(entry, scope)
+            e = self._inherit(entry, scope if scope is not None else current_scope())
             if not e.created_at:
                 e = e.model_copy(update={"created_at": utcnow_iso()})
             if e.tokens_est == 0 and e.content:
@@ -138,6 +148,53 @@ class ContextStore:
             updated = e.model_copy(update={"pinned": False})
             self._entries[entry_id] = updated
             await self._emit([self._record(updated, JournalAction.UNPIN, reason)])
+
+    async def reactivate(
+        self, entry_id: str, *, content: str, reason: str
+    ) -> None:
+        """DEMOTED/EVICTED → ACTIVE：正文回填（干预 refresh / 审计源）。"""
+        async with self._lock:
+            e = self._require(entry_id)
+            if e.status is EntryStatus.ACTIVE:
+                return
+            updated = e.model_copy(
+                update={
+                    "status": EntryStatus.ACTIVE,
+                    "content": content,
+                    "digest": (content or "")[:_DIGEST_LIMIT],
+                    "tokens_est": estimate_tokens(content),
+                    "pinned": False,
+                }
+            )
+            self._entries[entry_id] = updated
+            await self._emit(
+                [self._record(updated, JournalAction.REFRESH, reason)]
+            )
+
+    async def note_policy(self, *, reason: str, digest: str = "") -> None:
+        """无条目侧效应的策略变更 journal（budget / freeze）。"""
+        async with self._lock:
+            rec = JournalRecord(
+                id=uuid.uuid4().hex,
+                workspace_id=self.workspace_id,
+                owner_type=self.owner_type,
+                owner_id=self.owner_id,
+                task_id=self.owner_id if self.owner_type == "task" else None,
+                conversation_id=(
+                    self.owner_id if self.owner_type == "conversation" else None
+                ),
+                partition=ContextPartition.P2.value,
+                entry_id="*",
+                entry_kind="policy",
+                action=JournalAction.POLICY,
+                reason=reason,
+                policy_version=self.policy_version,
+                tokens_est=0,
+                digest=digest,
+                refs={},
+                created_at=utcnow_iso(),
+            )
+            await self._emit([rec])
 
     async def set_goal(self, text: str, *, reason: str) -> str:
         """写入新目标；既有 active GOAL 全部 demote(superseded)。返回新 entry_id。"""

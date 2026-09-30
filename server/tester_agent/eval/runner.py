@@ -21,7 +21,7 @@ from pathlib import Path
 
 from ..adapters.reme import Entry, IndexMirror, ReMeReaderFactory
 from ..domain import RetrievalConfig
-from ..graph.retrieval.pipeline import (
+from ..context.retrieval.pipeline import (
     close_retrieval_trace,
     funnel_counts,
     retrieve_pipeline,

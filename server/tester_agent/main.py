@@ -4,7 +4,8 @@
 API A–D、ExportService、Reconciler、IdempotencyStore、Maintenance；
 **嵌入式 ReMe**：``WorkspaceMemoryPool`` + ``register_sdk_builder`` +
 ``PoolRoutingWriter``（``app.state.kb_writer``；图路径仍不可达 Writer）。
-静态托管 ``web/dist``。
+启动时对全部未软删工作区 ``start_all`` 预热（对齐 QwenPaw）；单工作区失败
+只记日志不阻断进程。静态托管 ``web/dist``。
 
 lifespan 严格按 dd §6.5 六步启动序列，任一步失败阻断启动；关闭先走
 Reaper.graceful_shutdown（取消在飞任务等 30s）再 ``memory_pool.shutdown_all``
@@ -26,6 +27,7 @@ from .adapters.reme_sdk import PoolRoutingWriter, register_sdk_builder
 from .api.agents import router as agents_router
 from .api.cases import router as cases_router
 from .api.config import router as config_router
+from .api.context import router as context_router
 from .api.conversations import router as conversations_router
 from .api.debug import router as debug_router
 from .api.error_handling import install_error_handling
@@ -48,7 +50,8 @@ from .runtime.reconciler import Reconciler
 from .runtime.runner import Runner, TaskRegistry
 from .settings import Settings, validate_single_worker
 from .store.db import Database, run_migrations
-from .store.models import ConfigDAO, EventDAO, TaskDAO
+from .store.models import ConfigDAO, EventDAO, TaskDAO, WorkspaceDAO
+from .store.paths import resolve_workspace_root
 from .store.workspace_files import FileStore
 
 logger = get_logger(__name__)
@@ -77,15 +80,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         db = Database(settings.app_db_path)
         _app.state.db = db
-        file_store = FileStore(settings.workspaces_dir)
+        _app.state.settings = settings
+        # FileStore root = data_dir；任务路径 = {data}/workspaces/{id}/{task}/
+        # （或 workspace.root_dir 覆盖）
+        file_store = FileStore(settings.data_dir)
         _app.state.file_store = file_store
 
-        # 2. 加载 config；EventBus、ReMeFactory 就位（不做远端探活）
+        # 2. 加载 config；EventBus、ReMeFactory 就位；预热全部工作区嵌入 ReMe
         bus = EventBus(EventDAO(db))
         _app.state.bus = bus
         config_dao = ConfigDAO(db)
         cfg_row = await config_dao.get()
         runtime_cfg = cfg_row.runtime_dict()
+        model_cfg = cfg_row.model_dict()
         stale_sec = int(runtime_cfg.get("heartbeat_stale_sec", HEARTBEAT_STALE_SEC))
         reme_factory = ReMeReaderFactory()
         memory_pool = WorkspaceMemoryPool(settings.data_dir)
@@ -94,6 +101,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _app.state.memory_pool = memory_pool
         # 写实现仅 L2 提案确认端点可达（dd §9.2 / PRD 7）
         _app.state.kb_writer = PoolRoutingWriter(db, memory_pool)
+        ws_rows = await WorkspaceDAO(db).list_all()
+        for w in ws_rows:
+            root = resolve_workspace_root(
+                settings.data_dir, w.id, w.root_dir or ""
+            )
+            if w.root_dir:
+                file_store.register_workspace_root(w.id, root)
+                memory_pool.register_workspace_root(w.id, root)
+        warm = await memory_pool.start_all(
+            ((w.id, w.kb_config_obj()) for w in ws_rows),
+            model_config=model_cfg,
+        )
+        if warm:
+            started_n = sum(1 for ok in warm.values() if ok)
+            logger.info(
+                "reme_warm_start",
+                extra={"started": started_n, "total": len(warm)},
+            )
         # WP-29：进程内幂等键存储（dd §6.6 一期内存 TTL）
         idem_store = IdempotencyStore()
         _app.state.idem_store = idem_store
@@ -186,6 +211,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # WP-28：API-D（tech-design §5.5 §5.6 / dd §10.2 §8.7 §11.4 §10.3⑥）
     app.include_router(debug_router)
     app.include_router(kb_router)
+
+    # WP-32：上下文调试视图 / evictions / playground（context-management §8）
+    app.include_router(context_router)
 
     # WP-29：对账手动触发端点（dd §11.3）
     app.include_router(maintenance_router)

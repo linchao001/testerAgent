@@ -46,7 +46,7 @@ from ...domain import DegradedStep, LinkPlan
 from ...errors import AppError, LLMBadOutput
 from ...logging_config import get_logger
 from ...graph.constants import RETRIEVAL_PRESETS, STAGE_LINK_IDENTIFY
-from ...graph.retrieval.pipeline import close_retrieval_trace, retrieve_pipeline
+from ...context.retrieval.pipeline import close_retrieval_trace, retrieve_pipeline
 from ...prompts.loader import PromptLoader
 from ...store.models import ArtifactRow, MessageRow
 from .intake import _parse_payload  # 复用凭据 JSON 容错解析（同包内私有约定）

@@ -180,7 +180,7 @@ async def test_await_human_syncs_link_plan_on_resume_confirm():
         "tester_agent.graph.control.nodes.interrupt",
         return_value={"action": "confirm"},
     ):
-        result = await_human_node(state)
+        result = await await_human_node(state)
 
     assert result["artifacts"]["art1"]["confirmed_by"] == "user"
     assert result["link_plan"]["stories"][0]["story_id"] == "sx"

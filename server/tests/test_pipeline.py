@@ -29,7 +29,7 @@ from tester_agent.adapters.reme import (
 )
 from tester_agent.domain import Candidate, EntryType, RetrievalConfig
 from tester_agent.errors import ValidationError
-from tester_agent.graph.retrieval.pipeline import (
+from tester_agent.context.retrieval.pipeline import (
     ClosedLoop,
     close_loop,
     close_retrieval_trace,

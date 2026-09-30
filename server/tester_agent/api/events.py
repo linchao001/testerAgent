@@ -26,6 +26,13 @@ from ..store.models import EventRow
 
 _PING_INTERVAL_SEC = 15  # dd §6.2：每 15s 心跳
 
+# WP-32/33：上下文层 SSE 事件名（api/context 与 intervention 共用登记面）
+CONTEXT_COMMAND_EXECUTED = "context_command_executed"
+CONTEXT_POLICY_CHANGED = "context_policy_changed"
+CONTEXT_EVENT_TYPES = frozenset(
+    {CONTEXT_COMMAND_EXECUTED, CONTEXT_POLICY_CHANGED}
+)
+
 
 async def events_endpoint(
     task_id: str,

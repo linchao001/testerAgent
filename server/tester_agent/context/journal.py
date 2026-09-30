@@ -1,7 +1,9 @@
-"""journal 动作记录与落库协议（WP-30 先落记录模型与 Sink；DAO 在 WP-32 Task 13）。
+"""journal 动作记录与落库协议。
 
 journal 只记"发生过什么"（动作元数据 + digest），不存正文（spec §7/§15.6）。
 淘汰必归因（I4）：store 的每个状态动作都经 JournalSink 落一行。
+
+落库实现：``store.models.ContextJournalDAO``（005 迁移；``record`` 适配本协议）。
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ class JournalAction:
     REBUILD = "rebuild"
     GOAL = "goal"
     BATCH_CLOSE = "batch_close"
+    REFRESH = "refresh"
+    POLICY = "policy"
 
 
 class JournalRecord(BaseModel):

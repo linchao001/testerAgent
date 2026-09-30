@@ -24,14 +24,14 @@ from tester_agent.errors import (
     RateLimitedError,
     ValidationError,
 )
-from tester_agent.graph.retrieval import (
+from tester_agent.context.retrieval import (
     RetrievalTraceBuilder,
     meta_filter,
     multi_query,
     normalize_scope,
     parallel_recall,
 )
-from tester_agent.graph.retrieval.ops import lexical_score
+from tester_agent.context.retrieval.ops import lexical_score
 
 from fakes import FakeLLM, FakeReMeReader
 

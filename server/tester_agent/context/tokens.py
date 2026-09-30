@@ -1,4 +1,4 @@
-"""token 估算（WP-30 自 graph/retrieval/ops_b 平移，口径不变）。
+"""token 估算（WP-30 自 retrieval/ops_b 平移，口径不变）。
 
 中英混合：``len(cjk_chars) + len(ascii_words) * 1.3``，ceil 取整（保守预算口径）。
 ops_b 保留 re-export，既有调用路径零行为变化。

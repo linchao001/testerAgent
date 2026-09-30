@@ -194,7 +194,12 @@ async def invoke_capability(
         )
 
     hydrated = hydrate_state_from_artifacts(state)
-    increment = await node(ctx, hydrated)
+    # 防线 1：生产路径不经 wrap，在此压入 ExecScope（与 wrap 共用映射表）
+    from ..graph.wrap import resolve_scope_kwargs
+    from ..context.scopes import scope as exec_scope
+
+    async with exec_scope(**resolve_scope_kwargs(hydrated, kind=kind)):
+        increment = await node(ctx, hydrated)
     if not isinstance(increment, dict):
         increment = {}
     art_id, version = await _resolve_artifact_id(kind, ctx, increment)

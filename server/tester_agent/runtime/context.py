@@ -31,15 +31,15 @@ from ..store.models import (
 from ..store.workspace_files import FileStore
 
 if TYPE_CHECKING:
+    from ..context.retrieval.cache import RetrievalCache
     from ..graph.registry import GraphRegistry
-    from ..graph.retrieval.cache import RetrievalCache
     from ..runtime.runner import TaskRegistry
     from .bus import EventBus
 
 
 def _default_retrieval_cache() -> "RetrievalCache":
-    # 惰性导入：runtime.context 可先于 graph.retrieval 包被导入，避免模块导入环
-    from ..graph.retrieval.cache import RetrievalCache
+    # 惰性导入：runtime.context 可先于 context.retrieval 被导入，避免模块导入环
+    from ..context.retrieval.cache import RetrievalCache
 
     return RetrievalCache()
 
@@ -86,8 +86,7 @@ class DAOs:
     testcase: "TestcaseDAO | None" = None
     trace: "TraceDAO | None" = None
     event: "EventDAO | None" = None  # WP-21：EventBus 落库与 SSE 回放数据源
-    # WP-31 Task 8 预留：具体 ContextJournalDAO 由 WP-32 Task 12 落型；
-    # 此前仅持有字段（测试可塞 fake），默认 None 不影响任何既有路径。
+    # WP-32：ContextJournalDAO（005）；旧夹具未注入时为 None。
     journal: Any | None = None
 
 

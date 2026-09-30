@@ -60,6 +60,7 @@ def test_load_cases_smoke_sorted_and_filter():
         "02_point",
         "03_case",
         "04_hallucinated",
+        "05_context_pressure",
     ]
     only_point = load_cases(stage="point_write")
     assert [c.name for c in only_point] == ["02_point"]
@@ -188,7 +189,14 @@ def test_cli_baseline_exit0(capsys):
     code = main(["--preset", "smoke"])
     out = capsys.readouterr().out
     assert code == 0
-    for name in ("01_link", "02_point", "03_case", "04_hallucinated", "mean"):
+    for name in (
+        "01_link",
+        "02_point",
+        "03_case",
+        "04_hallucinated",
+        "05_context_pressure",
+        "mean",
+    ):
         assert name in out
     for col in ("recall_hit", "inject_hit", "reference_rate", "clause_coverage"):
         assert col in out
@@ -212,6 +220,57 @@ def test_cli_config_diff_neutral_exit0(capsys):
     assert code == 0
     assert "verdict: OK" in out
     assert "->" in out  # 对比模式
+
+
+def test_cli_context_enabled_diff_guardrails_exit0(capsys):
+    """WP-32：context on/off 对照——检索面不变，reference_rate/覆盖率不劣化。"""
+    code = main(
+        ["--preset", "smoke", "--config-diff", '{"context.enabled": false}']
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "verdict: OK" in out
+    assert "context.enabled" in out
+    assert "reference_rate mean Δ=" in out
+    assert "clause_coverage mean" in out
+    assert "05_context_pressure" in out
+
+
+def test_verdict_context_reference_rate_guard():
+    """context.enabled 护栏：reference_rate 均值跌超 5pt → REGRESSION。"""
+    from tester_agent.eval.run import _verdict
+    from tester_agent.eval.runner import CaseReport
+
+    def _r(name: str, ref: float, cov: float) -> CaseReport:
+        return CaseReport(
+            name=name,
+            stage="case_generate",
+            recall_hit=1.0,
+            inject_hit=1.0,
+            reference_rate=ref,
+            clause_coverage=cov,
+            aux_calls=0,
+            aux_tokens=0,
+            main_tokens=0,
+            wall_ms=1,
+            degraded_steps=0,
+        )
+
+    base = [_r("a", 1.0, 1.0), _r("b", 1.0, 1.0)]
+    bad = [_r("a", 0.9, 1.0), _r("b", 0.9, 1.0)]  # Δ=-10pt
+    msg, code = _verdict(base, bad, -0.05, diff={"context.enabled": False})
+    assert code == 1
+    assert "reference_rate" in msg
+
+    ok = [_r("a", 0.96, 1.0), _r("b", 0.96, 1.0)]  # Δ=-4pt
+    msg2, code2 = _verdict(base, ok, -0.05, diff={"context.enabled": False})
+    assert code2 == 0
+    assert "OK" in msg2
+
+    cov_drop = [_r("a", 1.0, 0.9), _r("b", 1.0, 0.9)]
+    msg3, code3 = _verdict(base, cov_drop, -0.05, diff={"context.enabled": True})
+    assert code3 == 1
+    assert "clause_coverage" in msg3
 
 
 def test_cli_stage_filter(capsys):

@@ -41,7 +41,7 @@ KIND_WEIGHTS: dict[EntryKind, float] = {
 }
 
 
-# ---------- 文本相似度（与 graph/retrieval/pipeline 同构，层内纯函数重实现） ----------
+# ---------- 文本相似度（与 context/retrieval/pipeline 同构，层内纯函数重实现） ----------
 
 _WS_RE = re.compile(r"\s+")
 

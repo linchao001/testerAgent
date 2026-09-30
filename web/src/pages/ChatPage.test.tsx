@@ -56,7 +56,43 @@ function renderChat() {
   )
 }
 
+/** 对话触发 mock start_case_generation（含「开始生成」关键词）。 */
+async function startViaChat(
+  user: ReturnType<typeof userEvent.setup>,
+  md: string,
+) {
+  await screen.findByTestId('chat-page')
+  expect(screen.queryByTestId('start-generate-btn')).toBeNull()
+  expect(screen.queryByTestId('start-generate-dialog')).toBeNull()
+  // 避免 userEvent 的 \\n 触发 Enter 发送；用空格代替换行
+  const flat = `${md.replace(/\n/g, ' ')} 请开始生成用例`
+  await user.type(screen.getByTestId('composer-input'), flat)
+  await user.click(screen.getByTestId('composer-send'))
+  await waitFor(() => {
+    expect(screen.getByTestId('task-status')).toBeInTheDocument()
+  })
+}
+
 describe('WP-F1 ChatPage', () => {
+  it('自由对话发送 chat 消息并展示回复', async () => {
+    const user = userEvent.setup()
+    renderChat()
+    await screen.findByTestId('chat-page')
+    await screen.findByTestId('composer')
+
+    await user.type(screen.getByTestId('composer-input'), '这个需求怎么拆？')
+    await user.click(screen.getByTestId('composer-send'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('message-list')).toHaveTextContent(
+        '这个需求怎么拆？',
+      )
+    })
+    expect(screen.getByTestId('message-list')).toHaveTextContent(
+      '（mock）已收到。',
+    )
+  })
+
   it('脚本事件驱动到 checkpoint_waiting 并展示确认入口', async () => {
     const user = userEvent.setup()
     ScriptedEventSource.script = [
@@ -87,13 +123,7 @@ describe('WP-F1 ChatPage', () => {
     ]
 
     renderChat()
-    await screen.findByTestId('requirement-input')
-
-    await user.type(
-      screen.getByTestId('requirement-textarea'),
-      '## 需求\n用户可登录',
-    )
-    await user.click(screen.getByTestId('requirement-submit'))
+    await startViaChat(user, '## 需求\n用户可登录')
 
     await waitFor(() => {
       expect(screen.getByTestId('checkpoint-banner')).toHaveTextContent(
@@ -122,9 +152,7 @@ describe('WP-F1 ChatPage', () => {
     ]
 
     renderChat()
-    await screen.findByTestId('requirement-input')
-    await user.type(screen.getByTestId('requirement-textarea'), '## 模糊需求')
-    await user.click(screen.getByTestId('requirement-submit'))
+    await startViaChat(user, '## 模糊需求')
 
     await screen.findByTestId('clarification-card')
     await user.type(screen.getByTestId('clarify-input-q-1'), '管理员')
@@ -150,14 +178,11 @@ describe('WP-F1 ChatPage', () => {
     ]
 
     renderChat()
-    await screen.findByTestId('requirement-input')
-    await user.type(screen.getByTestId('requirement-textarea'), '## 需求 A')
-    await user.click(screen.getByTestId('requirement-submit'))
+    await startViaChat(user, '## 需求 A')
 
     await waitFor(() => {
       expect(screen.getByTestId('checkpoint-banner')).toBeInTheDocument()
     })
-    // 模拟后端在 CP1 落 artifact（SSE 只带摘要，详情靠 GET）
     mockArriveCheckpoint()
 
     await user.type(
@@ -193,9 +218,7 @@ describe('WP-F1 ChatPage', () => {
     ]
 
     renderChat()
-    await screen.findByTestId('requirement-input')
-    await user.type(screen.getByTestId('requirement-textarea'), '## 需求 B')
-    await user.click(screen.getByTestId('requirement-submit'))
+    await startViaChat(user, '## 需求 B')
 
     await waitFor(() => {
       expect(screen.getByTestId('review-proposal-card')).toBeInTheDocument()

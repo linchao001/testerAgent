@@ -20,7 +20,7 @@ import pytest
 from tester_agent.adapters.reme import Entry, IndexMirror
 from tester_agent.domain import Candidate, EntryType, InjectedItem, RetrievalConfig
 from tester_agent.errors import ValidationError
-from tester_agent.graph.retrieval import (
+from tester_agent.context.retrieval import (
     ORDERING_STRATEGY,
     PASSAGE_WINDOW_CHARS,
     RetrievalCache,
@@ -32,7 +32,7 @@ from tester_agent.graph.retrieval import (
     recall_key,
     rerank,
 )
-from tester_agent.graph.retrieval.ops_b import _select_passage, _split_segments
+from tester_agent.context.retrieval.ops_b import _select_passage, _split_segments
 
 from fakes import FakeLLM, FakeReMeReader
 

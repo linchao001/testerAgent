@@ -14,17 +14,13 @@
 # 浏览器打开 http://127.0.0.1:8080
 ```
 
-Windows（PowerShell）等价步骤：
-
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e .\server
-if (-not (Test-Path server\.env)) { Copy-Item server\.env.example server\.env }
-python -m tester_agent.cli init-db
-cd web; npm install; npm run build; cd ..
-uvicorn tester_agent.main:app --host 127.0.0.1 --port 8080 --workers 1
+# Windows（PowerShell）
+.\scripts\dev.ps1
+# 浏览器打开 http://127.0.0.1:8080
 ```
+
+若首次执行被策略拦截，可临时放宽当前进程：`Set-ExecutionPolicy -Scope Process Bypass`。
 
 环境变量见 `server/.env.example`（`TESTER_AGENT_SINGLE_WORKER` 必须为 `1`）。
 

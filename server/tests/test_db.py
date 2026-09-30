@@ -44,6 +44,7 @@ EXPECTED_TABLES = {
     "kb_proposal",
     "config",
     "subtask",
+    "context_journal",
 }
 EXPECTED_INDEXES = {
     "idx_message_conv",
@@ -60,6 +61,9 @@ EXPECTED_INDEXES = {
     "idx_review_task",
     "idx_proposal_ws",
     "idx_subtask_task",
+    "idx_ctx_journal_owner",
+    "idx_ctx_journal_ws",
+    "idx_ctx_journal_entry",
 }
 
 
@@ -81,17 +85,18 @@ def _open_raw(db_path: Path):
 class TestMigrations:
     def test_discover_finds_all_migrations(self):
         migrations = discover_migrations()
-        assert [v for v, _ in migrations] == [1, 2, 3, 4]
+        assert [v for v, _ in migrations] == [1, 2, 3, 4, 5]
         assert migrations[0][1].name == "001_init.sql"
         assert migrations[1][1].name == "002_testcase_created_at.sql"
         assert migrations[3][1].name == "004_plan_execute.sql"
+        assert migrations[4][1].name == "005_context_journal.sql"
 
     def test_fresh_migration_creates_everything(self, tmp_path):
         db_path = tmp_path / "data" / "app.db"
 
         applied = run_migrations(db_path)
 
-        assert applied == [1, 2, 3, 4]
+        assert applied == [1, 2, 3, 4, 5]
         assert db_path.is_file()
         with _open_raw(db_path) as conn:
             tables = {
@@ -112,7 +117,7 @@ class TestMigrations:
             rows = conn.execute(
                 "SELECT schema_version, applied_at FROM schema_meta ORDER BY schema_version"
             ).fetchall()
-            assert [r["schema_version"] for r in rows] == [1, 2, 3, 4]
+            assert [r["schema_version"] for r in rows] == [1, 2, 3, 4, 5]
             assert rows[0]["applied_at"]
             # 002：testcase.created_at 为 NOT NULL；003：testcase.batch_id
             case_cols = {r["name"]: r for r in conn.execute("PRAGMA table_info(testcase)")}
@@ -126,12 +131,12 @@ class TestMigrations:
 
     def test_repeat_migration_idempotent(self, tmp_path):
         db_path = tmp_path / "app.db"
-        assert run_migrations(db_path) == [1, 2, 3, 4]
+        assert run_migrations(db_path) == [1, 2, 3, 4, 5]
 
         # 重复执行：不重复应用、不重复插版本行、表完好
         assert run_migrations(db_path) == []
         with _open_raw(db_path) as conn:
-            assert conn.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 4
+            assert conn.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 5
             assert conn.execute("SELECT COUNT(*) FROM config").fetchone()[0] == 1
 
     def test_wal_persisted_on_file(self, tmp_path):
@@ -187,7 +192,7 @@ class TestMigrations:
         finally:
             conn.close()
 
-        assert run_migrations(db_path) == [2, 3, 4]
+        assert run_migrations(db_path) == [2, 3, 4, 5]
 
         with _open_raw(db_path) as conn:
             row = conn.execute(
@@ -202,7 +207,7 @@ class TestMigrations:
                     "SELECT schema_version FROM schema_meta ORDER BY schema_version"
                 )
             ]
-            assert versions == [1, 2, 3, 4]
+            assert versions == [1, 2, 3, 4, 5]
         assert run_migrations(db_path) == []
 
 
@@ -363,7 +368,7 @@ class TestSeed:
             out_lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
             out1 = json.loads(out_lines[-1])
             assert out1["ok"] is True
-            assert out1["migrated"] == [1, 2, 3, 4]
+            assert out1["migrated"] == [1, 2, 3, 4, 5]
             assert out1["seeded"]["agent_inserted"] is True
 
             assert cli_main(["init-db"]) == 0

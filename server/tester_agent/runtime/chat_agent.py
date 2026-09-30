@@ -12,6 +12,7 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -36,6 +37,7 @@ from ..memory.prompts import build_memory_guidance_prompt
 from ..prompts.loader import PromptLoader
 from ..store.models import (
     ConfigDAO,
+    ContextJournalDAO,
     ConversationRow,
     MessageDAO,
     MessageRow,
@@ -48,7 +50,11 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM = (
     "你是 TesterAgent 用例设计助手。可使用 bash 与 str_replace_editor 查看/"
-    "编辑当前工作区内的文件。路径相对于工作区根目录。回答使用简洁中文。"
+    "编辑当前工作区内的文件。路径相对于工作区根目录。回答使用简洁中文。\n"
+    "当用户已通过对话提供足够的需求正文（粘贴或附件），并明确要求生成/"
+    "设计用例时，调用 start_case_generation："
+    "优先传 requirement_md（完整 Markdown）；若需求已写入工作区文件可传 path。"
+    "同会话已有进行中的任务时不要重复调用。"
 )
 
 _locks: dict[str, asyncio.Lock] = {}
@@ -79,8 +85,8 @@ def db_messages_to_lc(rows: list[MessageRow]) -> list[BaseMessage]:
 
 
 def workspace_root_for(file_store: FileStore, workspace_id: str) -> Path:
-    """Sandbox root aligned with FileStore layout: ``{root}/workspaces/{id}/``."""
-    return file_store.root / "workspaces" / workspace_id
+    """Sandbox root aligned with FileStore layout: ``{workspace_root}/``."""
+    return file_store.workspace_root(workspace_id)
 
 
 def _system_prompt(memory_manager: Any | None) -> str:
@@ -141,7 +147,13 @@ async def _start_memory_manager(
 
 
 def _build_tools(
-    *, conv: ConversationRow, root: Path, runtime_config: dict, memory_manager: Any | None
+    *,
+    conv: ConversationRow,
+    root: Path,
+    runtime_config: dict,
+    memory_manager: Any | None,
+    context_store: Any | None = None,
+    start_case_deps: Any | None = None,
 ):
     return build_case_designer_tools(
         ToolBuildContext(
@@ -151,7 +163,96 @@ def _build_tools(
             memory_manager=memory_manager
             if memory_manager and memory_manager.is_started
             else None,
+            context_store=context_store,
+            start_case_deps=start_case_deps,
         )
+    )
+
+
+def _make_start_case_deps(
+    *,
+    db,
+    file_store: FileStore,
+    conv: ConversationRow,
+    root: Path,
+    runner: Any | None,
+) -> Any:
+    from ..tools.start_case import StartCaseDeps
+
+    return StartCaseDeps(
+        db=db,
+        file_store=file_store,
+        conversation_id=conv.id,
+        workspace_id=conv.workspace_id,
+        workspace_root=root,
+        runner=runner,
+        outcome={},
+    )
+
+
+def _payload_with_started_task(
+    payload: dict, start_case_deps: Any | None
+) -> dict:
+    out = dict(payload)
+    if start_case_deps is None:
+        return out
+    outcome = getattr(start_case_deps, "outcome", None) or {}
+    tid = outcome.get("started_task_id")
+    if tid:
+        out["started_task_id"] = tid
+    return out
+
+
+async def try_slash_context_command(
+    store: Any, text: str
+) -> tuple[bool, str]:
+    """识别 ``/context <verb> <selector|args>``；命中则直通执行器。
+
+    返回 ``(handled, reply_text)``；未命中前缀时 handled=False。
+    """
+    raw = (text or "").strip()
+    if not raw.lower().startswith("/context"):
+        return False, ""
+    from ..context.intervention import ContextAction, ContextCommand, execute
+
+    parts = raw.split(None, 2)  # /context VERB REST
+    if len(parts) < 2:
+        return True, "用法：/context <pin|unpin|forget|show|set_goal|budget|freeze|unfreeze> ..."
+    verb = parts[1].lower()
+    rest = parts[2] if len(parts) > 2 else ""
+    try:
+        action = ContextAction(verb)
+    except ValueError:
+        return True, f"未知 context 动词：{verb}"
+    arg = None
+    selector = rest
+    if action is ContextAction.SET_GOAL:
+        arg = rest
+        selector = ""
+    elif action is ContextAction.BUDGET:
+        # /context budget chat 1000 2000 3000
+        bits = rest.split()
+        if len(bits) >= 4:
+            import json
+
+            arg = json.dumps(
+                {
+                    "profile": bits[0],
+                    "p0": int(bits[1]),
+                    "p1": int(bits[2]),
+                    "p2": int(bits[3]),
+                }
+            )
+            selector = ""
+        else:
+            return True, "用法：/context budget <profile> <p0> <p1> <p2>"
+    result = await execute(
+        store,
+        ContextCommand(action=action, selector=selector, arg=arg),
+        operator="user",
+    )
+    return True, (
+        f"context {result.action} ok affected={result.affected} {result.message}"
     )
 
 
@@ -163,6 +264,7 @@ async def run_chat_turn(
     user_message: MessageRow,
     memory_pool: Any | None = None,
     context_registry: ContextRegistry | Any | None = None,
+    runner: Any | None = None,
 ) -> MessageRow:
     """Run tool agent for a chat user message; persist and return assistant row."""
     async with _conv_lock(conv.id):
@@ -182,6 +284,7 @@ async def run_chat_turn(
                 user_message=user_message,
                 runtime_config=runtime_config,
                 memory_manager=memory_manager,
+                runner=runner,
             )
         return await _run_context(
             db=db,
@@ -192,6 +295,7 @@ async def run_chat_turn(
             runtime_config=runtime_config,
             memory_manager=memory_manager,
             context_registry=context_registry,
+            runner=runner,
         )
 
 
@@ -206,6 +310,7 @@ async def _run_legacy(
     user_message: MessageRow,
     runtime_config: dict,
     memory_manager: Any | None,
+    runner: Any | None = None,
 ) -> MessageRow:
     history_page = await MessageDAO(db).list_by_conversation(
         conv.id, cursor=None, limit=_LEGACY_HISTORY_LIMIT
@@ -213,10 +318,16 @@ async def _run_legacy(
     history = db_messages_to_lc(list(reversed(history_page.items)))
     root = workspace_root_for(file_store, conv.workspace_id)
     root.mkdir(parents=True, exist_ok=True)
+    start_deps = _make_start_case_deps(
+        db=db, file_store=file_store, conv=conv, root=root, runner=runner
+    )
 
     tools = _build_tools(
-        conv=conv, root=root, runtime_config=runtime_config,
+        conv=conv,
+        root=root,
+        runtime_config=runtime_config,
         memory_manager=memory_manager,
+        start_case_deps=start_deps,
     )
     max_steps = int(runtime_config.get("tool_agent_max_steps", 12))
     try:
@@ -232,7 +343,10 @@ async def _run_legacy(
             max_steps=max_steps,
         )
         content = result.final_text or "（无文本回复）"
-        payload = {"tool_trace": [dict(t) for t in result.tool_trace]}
+        payload = _payload_with_started_task(
+            {"tool_trace": [dict(t) for t in result.tool_trace]},
+            start_deps,
+        )
     except Exception as exc:  # noqa: BLE001 — surface to chat UI
         content = f"工具对话失败：{exc}"
         payload = {"tool_trace": [], "error": type(exc).__name__}
@@ -271,6 +385,7 @@ async def _run_context(
     runtime_config: dict,
     memory_manager: Any | None,
     context_registry: ContextRegistry | Any | None,
+    runner: Any | None = None,
 ) -> MessageRow:
     # 无组合根注册表（app_ctx 未构造）时退回进程默认注册表：模块对象暴露
     # 同名 start_owner/get_owner 函数，结构对型。
@@ -282,14 +397,39 @@ async def _run_context(
 
     store = registry.get_owner("conversation", conv.id)
     if store is None:
-        store = registry.start_owner(
+        journal_dao = ContextJournalDAO(db)
+        daos = SimpleNamespace(
+            message=MessageDAO(db),
+            journal=journal_dao,
+            artifact=None,
+            trace=None,
+        )
+        store = await registry.restore_owner(
             owner_type="conversation",
             owner_id=conv.id,
             workspace_id=conv.workspace_id,
+            daos=daos,
+            journal_sink=journal_dao,
             policy_version=str(runtime_config.get("context.policy_version", "cp-v1")),
+            step_window=int(runtime_config.get("context.step_window", 1)),
         )
-        # WP-32 Task 13 前的过渡：首次 start 从 MessageDAO 回填 CHAT_TURN
-        current_turn = await _backfill_chat_history(db, conv.id, store)
+        current_turn = _max_turn_seq(store)
+        chat_eid = f"chat:{user_message.id}"
+        if not any(e.entry_id == chat_eid for e in store.entries()):
+            current_turn = current_turn + 1
+            await store.append(
+                ContextEntry(
+                    entry_id=chat_eid,
+                    partition=ContextPartition.P2,
+                    entry_kind=EntryKind.CHAT_TURN,
+                    role="user",
+                    content=user_message.content,
+                    digest=programmatic_digest(user_message.content),
+                    turn_seq=current_turn,
+                    refs=EntryRefs(message_id=user_message.id),
+                    created_at=user_message.created_at,
+                )
+            )
     else:
         current_turn = _max_turn_seq(store) + 1
         await store.append(
@@ -308,11 +448,50 @@ async def _run_context(
 
     root = workspace_root_for(file_store, conv.workspace_id)
     root.mkdir(parents=True, exist_ok=True)
+    start_deps = _make_start_case_deps(
+        db=db, file_store=file_store, conv=conv, root=root, runner=runner
+    )
     tools = _build_tools(
-        conv=conv, root=root, runtime_config=runtime_config,
+        conv=conv,
+        root=root,
+        runtime_config=runtime_config,
         memory_manager=memory_manager,
+        context_store=store,
+        start_case_deps=start_deps,
     )
     max_steps = int(runtime_config.get("tool_agent_max_steps", 12))
+
+    # 斜杠命令直通执行器（不经 LLM）
+    if bool(runtime_config.get("context.intervention.enabled", True)):
+        handled, slash_text = await try_slash_context_command(
+            store, user_message.content
+        )
+        if handled:
+            content = slash_text or "（已执行）"
+            payload = {"tool_trace": [], "slash": True}
+            assistant = MessageRow.create(
+                id=uuid.uuid4().hex,
+                conversation_id=conv.id,
+                role=MessageRole.ASSISTANT,
+                kind=MessageKind.CHAT,
+                content=content,
+                payload=payload,
+            )
+            await MessageDAO(db).put(assistant)
+            await store.append(
+                ContextEntry(
+                    entry_id=f"chat:{assistant.id}",
+                    partition=ContextPartition.P2,
+                    entry_kind=EntryKind.CHAT_TURN,
+                    role="assistant",
+                    content=content,
+                    digest=programmatic_digest(content),
+                    turn_seq=current_turn,
+                    refs=EntryRefs(message_id=assistant.id),
+                    created_at=assistant.created_at,
+                )
+            )
+            return assistant
 
     # P0：methodology 模板 + 经 extra_static 注入会话 persona（含记忆指引）
     p0_messages, p0_version, _ = bootstrap_p0(
@@ -347,7 +526,10 @@ async def _run_context(
                 before_model_hook=make_tool_message_hook(store),
             )
         content = result.final_text or "（无文本回复）"
-        payload = {"tool_trace": [dict(t) for t in result.tool_trace]}
+        payload = _payload_with_started_task(
+            {"tool_trace": [dict(t) for t in result.tool_trace]},
+            start_deps,
+        )
     except Exception as exc:  # noqa: BLE001 — surface to chat UI
         content = f"工具对话失败：{exc}"
         payload = {"tool_trace": [], "error": type(exc).__name__}
@@ -388,50 +570,7 @@ async def _run_context(
     return assistant
 
 
-# ---------- 过渡回填与辅助 ----------
-
-
-async def _backfill_chat_history(
-    db, conversation_id: str, store, *, limit: int = _LEGACY_HISTORY_LIMIT
-) -> int:
-    """首次 start：把最近消息转 CHAT_TURN 灌入空 store。
-
-    TODO(WP-32 Task 13): 由 rebuild_store（artifact/message + journal
-    重放）替换本过渡逻辑。
-    """
-    page = await MessageDAO(db).list_by_conversation(
-        conversation_id, cursor=None, limit=limit
-    )
-    rows = [
-        m
-        for m in reversed(page.items)
-        if m.kind == MessageKind.CHAT
-        and m.role in (MessageRole.USER, MessageRole.ASSISTANT)
-    ]
-    turn = 0
-    expect_assistant = False
-    for m in rows:
-        if m.role == MessageRole.USER:
-            turn += 1
-            expect_assistant = True
-        elif not expect_assistant:
-            turn += 1  # 无配对 user 的孤立 assistant（防御性编号）
-        await store.append(
-            ContextEntry(
-                entry_id=f"chat:{m.id}",
-                partition=ContextPartition.P2,
-                entry_kind=EntryKind.CHAT_TURN,
-                role=m.role,
-                content=m.content,
-                digest=programmatic_digest(m.content),
-                turn_seq=turn,
-                refs=EntryRefs(message_id=m.id),
-                created_at=m.created_at,
-            )
-        )
-        if m.role == MessageRole.ASSISTANT:
-            expect_assistant = False
-    return turn
+# ---------- 辅助 ----------
 
 
 def _max_turn_seq(store) -> int:

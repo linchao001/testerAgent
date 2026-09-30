@@ -44,6 +44,7 @@ export function getWorkspace(id: string): Promise<Workspace> {
 export function createWorkspace(body: {
   name: string
   description?: string
+  root_dir?: string
   kb_config: KbConfig
 }): Promise<Workspace> {
   return apiRequest<Workspace>('/api/v1/workspaces', {
@@ -57,6 +58,7 @@ export function updateWorkspace(
   body: {
     name?: string
     description?: string
+    root_dir?: string
     kb_config?: KbConfig
   },
 ): Promise<Workspace> {

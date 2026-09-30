@@ -47,16 +47,18 @@ function asKbConfig(raw: Workspace['kb_config']): KbConfig {
 type FormState = {
   name: string
   description: string
+  root_dir: string
   kb: KbConfig
 }
 
 function formFromWs(ws: Workspace | null): FormState {
   if (!ws) {
-    return { name: '', description: '', kb: { ...EMPTY_KB } }
+    return { name: '', description: '', root_dir: '', kb: { ...EMPTY_KB } }
   }
   return {
     name: ws.name,
     description: ws.description,
+    root_dir: ws.root_dir ?? '',
     kb: asKbConfig(ws.kb_config),
   }
 }
@@ -168,6 +170,7 @@ export function WorkspacesPage() {
         const ws = await createWorkspace({
           name: form.name.trim(),
           description: form.description,
+          root_dir: form.root_dir.trim(),
           kb_config: form.kb,
         })
         await reloadList()
@@ -180,6 +183,7 @@ export function WorkspacesPage() {
         const ws = await updateWorkspace(selectedId, {
           name: form.name.trim(),
           description: form.description,
+          root_dir: form.root_dir.trim(),
           kb_config: form.kb,
         })
         await reloadList()
@@ -333,6 +337,22 @@ export function WorkspacesPage() {
                   setForm((f) => ({ ...f, description: e.target.value }))
                 }
               />
+            </label>
+            <label className="block text-sm sm:col-span-2">
+              <span className="mb-1 block text-stone-700">数据目录</span>
+              <input
+                aria-label="数据目录"
+                className="w-full rounded-md border border-stone-300 px-3 py-1.5 text-sm font-mono"
+                placeholder="留空 = data/workspaces/{id}/；或填绝对路径"
+                value={form.root_dir}
+                disabled={busy}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, root_dir: e.target.value }))
+                }
+              />
+              <span className="mt-1 block text-xs text-stone-500">
+                cases / snapshots / ReMe vault 落在此目录；有任务后不可更改。
+              </span>
             </label>
             <label className="block text-sm sm:col-span-2">
               <span className="mb-1 block text-stone-700">知识库 ID</span>

@@ -38,7 +38,7 @@ from ..adapters.reme import IndexMirror
 from ..domain import Candidate, EntryType, InjectedItem
 from ..errors import NotFoundError, TaskStateConflict, ValidationError
 from ..graph.constants import RETRIEVAL_PRESETS
-from ..graph.retrieval.pipeline import funnel_counts, retrieve_pipeline
+from ..context.retrieval.pipeline import funnel_counts, retrieve_pipeline
 from ..runtime.context import AppContext, TaskContext
 from ..store.models import (
     SnapshotDAO,

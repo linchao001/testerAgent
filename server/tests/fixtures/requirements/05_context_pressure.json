@@ -1,0 +1,36 @@
+{
+  "name": "05_context_pressure",
+  "stage": "case_generate",
+  "intent": "订单 下单 支付 回调 幂等 库存 金额 校验 退款 流水 对账 长需求上下文压力样本",
+  "requirement": "需求 R5（长文）：覆盖下单→支付→回调→对账全链路，触发上下文淘汰压力；条款 c1~c6 均需被注入知识覆盖。",
+  "scope": {"link_ids": ["L1"], "story_ids": ["S1", "S2"]},
+  "clauses": ["c1", "c2", "c3", "c4", "c5", "c6"],
+  "llm": {
+    "multi_query": {
+      "keyword_queries": ["下单 库存", "支付 回调 幂等", "对账 流水"],
+      "rewrite_queries": ["订单金额校验", "退款链路", "payments 表"]
+    },
+    "rerank_scores": {
+      "a1": 100,
+      "a2": 95,
+      "b1": 90,
+      "d1": 85,
+      "db1": 80,
+      "db2": 75
+    }
+  },
+  "expected": {
+    "entries": ["a1", "a2", "b1", "d1", "db1", "db2"],
+    "generated_texts": [
+      "用例：下单 [ID:a1] 库存 [ID:b1]；支付回调 [ID:a2] 幂等参考缺陷 [ID:d1]；对账 [ID:db1] [ID:db2]"
+    ],
+    "entry_clauses": {
+      "a1": ["c1"],
+      "b1": ["c2"],
+      "a2": ["c3"],
+      "d1": ["c4"],
+      "db1": ["c5"],
+      "db2": ["c6"]
+    }
+  }
+}

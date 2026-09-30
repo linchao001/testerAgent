@@ -53,6 +53,7 @@ export function resetSettingsMockState() {
       id: 'ws-f5',
       name: '演示工作区',
       description: 'WP-F5 mock',
+      root_dir: '',
       kb_config: {
         kb_id: 'zhb_kb',
         options: {},
@@ -101,6 +102,7 @@ export const settingsHandlers = [
     const body = (await request.json()) as {
       name: string
       description?: string
+      root_dir?: string
       kb_config: KbConfig
     }
     seq += 1
@@ -108,6 +110,7 @@ export const settingsHandlers = [
       id: `ws-new-${seq}`,
       name: body.name,
       description: body.description ?? '',
+      root_dir: body.root_dir ?? '',
       kb_config: body.kb_config,
       created_at: now(),
     }
@@ -125,6 +128,7 @@ export const settingsHandlers = [
     const body = (await request.json()) as {
       name?: string
       description?: string
+      root_dir?: string
       kb_config?: KbConfig
     }
     const prev = workspaces[idx]
@@ -132,6 +136,7 @@ export const settingsHandlers = [
       ...prev,
       name: body.name ?? prev.name,
       description: body.description ?? prev.description,
+      root_dir: body.root_dir ?? prev.root_dir,
       kb_config: body.kb_config ?? prev.kb_config,
     }
     workspaces = [

@@ -1,10 +1,11 @@
-"""检索子图（dd §8）：算子 + 管线编排。
+"""L4 检索管线（tech-design §4.3 / dd §8）：算子 + 管线编排。
 
-- ``ops``：检索算子 A（multi_query / parallel_recall / meta_filter，WP-10）；
-- ``ops_b``：检索算子 B（rerank / passage_extract / assemble，WP-11）+
-  RetrievalOutcome；
-- ``cache``：RetrievalCache（§8.5 进程内 LRU，run 分区清空，WP-11）；
-- WP-12 落 retrieve_pipeline 编排与 trace/snapshot 落库。
+本子包可依赖 adapters / store / runtime（与同层叶子模块的依赖门禁分离）。
+
+- ``ops``：检索算子 A（multi_query / parallel_recall / meta_filter）；
+- ``ops_b``：检索算子 B（rerank / passage_extract / assemble）+ RetrievalOutcome；
+- ``cache``：RetrievalCache（§8.5 进程内 LRU，run 分区清空）；
+- ``pipeline``：retrieve_pipeline 编排与 trace/snapshot 落库。
 """
 
 from .cache import RetrievalCache, entry_key, intent_hash, recall_key

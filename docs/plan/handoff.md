@@ -101,10 +101,48 @@
 |---|---|---|---|---|
 | WP-30 | context 纯函数层（models/tokens/budget/journal/store/policy/scopes/assembler/p0/registry） | done | 2026-09-28 | §3 记录区 [WP-30] |
 | WP-31 | 消费面接线（chat_agent / tool_agent hook / batch-item scope / methodology.md，feature flag 回退） | done | 2026-09-28 | §3 记录区 [WP-31] |
+| WP-32 | 控制环/持久化/验收（005 journal + rebuild + T1 + 调试 API + 场景 13 + 门禁 + eval） | done | 2026-09-29 | §3 记录区 [WP-32] |
+| WP-33 | 运行时干预（intervention 执行器 + commands API + context_* 工具/斜杠） | done | 2026-09-29 | §3 记录区 [WP-33] |
 
 ## 3. 交接记录（按完成顺序倒序追加，最新在最上）
 
 <!-- 记录区开始：新记录插入到本行下方 -->
+
+### [WP-33] context 运行时干预 — done（2026-09-29）
+
+- 状态：done（设计 `docs/superpowers/specs/2026-09-28-context-management-design.md` §14；计划 Wave D Tasks 17–19）
+- 交付物：
+  - **Task 17**：`context/intervention.py`（selector 六语法 id/kind/step/recent/item/batch/all；pin/unpin/forget/refresh/set_goal/budget/freeze/unfreeze/show；P0→422、pinned forget→CONFIRM_REQUIRED、终态 `store.closed`→409；journal `reason=manual:*`）；store 增 `closed` / `budget_overrides` / `reactivate` / `note_policy`；journal 增 REFRESH/POLICY；assembler 优先取 store.budget_overrides
+  - **Task 18**：`api/context.py` 扩展 `POST /tasks|conversations/{id}/context/commands`（Idempotency-Key 重放、跨 ws 404、completed 写 409/show 只读、SSE `context_command_executed` + `context_policy_changed`）
+  - **Task 19**：`tools/context_tools.py`（context_pin/unpin/forget/show/set_goal/budget；forget 多命中返回候选不执行）；`ToolBuildContext.context_store` + `context.intervention.enabled` 开关注册；`chat_agent.try_slash_context_command`（`/context <verb> …` 直通执行器）
+  - 测试：`tests/test_context_intervention.py`（22）
+- 验收：
+  - `pytest tests/test_context_intervention.py -p no:zframe` → **22 passed**
+  - 全量 `pytest tests/ -p no:zframe` → **1041 passed**，1 失败为预存 flaky `test_files.py::test_cleanup_ignores_fresh_tmp_and_non_tmp`（mtime 时序，handoff 已登记与本包无关）；门禁 `test_context_gates` 全绿
+- 与设计偏离：
+  ① `recall` 指令一期仅返回 deferred（retrieve_pipeline 未在执行器内联）；
+  ② journal 动作仍用 typed pin/demote/refresh/policy，人工语义落在 `reason=manual:*`（便于 rebuild 重放）；
+  ③ commands API `model_window` 兜底 128000（playground 同口径），未异步读 ConfigDAO.model_dict
+- 下个包起步点：上下文管理层（WP-30～33）一期闭环完成。可选后续：前端调试页（γ 线）、recall 接 retrieve_pipeline、registry shutdown 钩子
+
+### [WP-32] context 控制环 / 持久化 / 验收 — done（2026-09-29）
+
+- 状态：done（设计 `docs/superpowers/specs/2026-09-28-context-management-design.md`；计划 Wave C Tasks 12–16）
+- 交付物：
+  - **Task 12**：`store/migrations/005_context_journal.sql` + `ContextJournalDAO`；`DEFAULT_RUNTIME_CONFIG` 增 `context.*`；Runner 注入 task `context_store`；测试 `test_migration_005_context.py` / `test_context_config.py`
+  - **Task 13**：`context/rebuild.py`（artifact/message + journal 重放）；chat 过渡回填改为 registry.restore；测试 `test_context_rebuild.py`
+  - **Task 14**：`graph/control/context_t1.py` + wrap phase 作用域；confirm pin / outline SHARED；测试 `test_context_control_graph.py` / `test_context_wrap_scope.py`
+  - **Task 15**：`api/context.py` 调试视图/evictions/playground + SSE 事件名；测试 `test_context_api.py`
+  - **Task 16**：场景 13 `tests/test_scenario_13_context.py`（200 chat + 12-step replan×2/repair×3/review×2 + 100 条批次，§10.2 六项 + O(1) + 阶段隔离）；门禁 `test_context_gates.py`（叶子反向依赖区分 `from .store` vs `from ..store`；ReMeWriter 零引用；12a 不回退）；eval `05_context_pressure.json` + `context.enabled` config-diff 护栏（reference_rate ≤-5pt / clause_coverage 不降）
+- 验收：
+  - 全量 `cd server && python -m pytest tests/ -p no:zframe --tb=no -q` → **1020 passed**（基线 WP-31=966，本包约 +54）
+  - Task 16 子集 `test_scenario_13_context` / `test_context_gates` / `test_eval`（含 context 护栏）全绿
+  - `-W error`：收集期撞既有 anyio `BlockingPortal` DeprecationWarning（非本包引入；与 WP-31 登记的 sqlite unraisable flaky 同属环境噪声），业务用例无失败
+- 与设计偏离：
+  ① 场景 13 O(1) 对照对 CASE_ITEM 使用 `persist_evictions=False`，避免第 1 条装配 demote 污染第 100 条墓碑窗口；
+  ② eval `context.enabled` 为对照标记键，不写入 RetrievalConfig（检索面字节不变，护栏看 reference_rate/clause_coverage）；
+  ③ 门禁 AST 扫描显式放过 level=1 相对 import（`context.store`），只禁 level≥2 / 绝对 `tester_agent.store` 等外层包
+- 下个包起步点：**WP-33** Task 17——`context/intervention.py` selector 六语法 + pin/unpin/forget/refresh/set_goal/budget/freeze；读 design §14
 
 ### [WP-31] context 消费面接线 — done（2026-09-28）
 

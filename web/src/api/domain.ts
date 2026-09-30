@@ -96,6 +96,8 @@ export type Workspace = {
   id: string
   name: string
   description: string
+  /** 空 = 默认 data/workspaces/{id}/；非空 = 绝对路径 */
+  root_dir: string
   kb_config: KbConfig | Record<string, unknown>
   created_at: string
 }
@@ -163,6 +165,7 @@ export type Message = {
 export type SendMessageOut = {
   user: Message
   assistant: Message | null
+  started_task_id?: string | null
 }
 
 export type ArtifactSummary = {

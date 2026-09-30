@@ -33,6 +33,9 @@ class ToolBuildContext:
     cancel_event: asyncio.Event | None = None
     bash_manager: PersistentBashManager | None = None
     memory_manager: object | None = None
+    context_store: object | None = None
+    #: When set, chat turn mounts ``start_case_generation``.
+    start_case_deps: object | None = None
 
 
 def build_case_designer_tools(
@@ -62,6 +65,10 @@ def build_case_designer_tools(
         from ..memory.tools import make_memory_search_tool
 
         tools.append(make_memory_search_tool(mem))
+    if ctx.start_case_deps is not None:
+        from .start_case import make_start_case_tool
+
+        tools.append(make_start_case_tool(ctx.start_case_deps))
     if include_capabilities:
         from .capabilities import make_capability_tools
 
@@ -70,4 +77,11 @@ def build_case_designer_tools(
         from .orchestration import make_orchestration_tools
 
         tools.extend(make_orchestration_tools())
+    if (
+        ctx.context_store is not None
+        and bool(rc.get("context.intervention.enabled", True))
+    ):
+        from .context_tools import make_context_tools
+
+        tools.extend(make_context_tools(ctx.context_store))
     return tools

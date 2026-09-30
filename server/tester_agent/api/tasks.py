@@ -572,6 +572,17 @@ async def confirm_task(task_id: str, body: ConfirmIn, request: Request) -> Confi
     elif body.action != "reject_rerun":
         await artifact_dao.mark_confirmed(artifact.id, by="user")
 
+    if body.action != "reject_rerun":
+        # WP-32：确认后 pin 上下文 digest / 大纲 SHARED 摘要（store 缺失则跳过）
+        await _context_pin_on_confirm(
+            request,
+            task_id=task_id,
+            workspace_id=task.workspace_id,
+            artifact_id=out_artifact_id,
+            artifact_kind=artifact.kind or artifact.stage or "",
+            payload=confirmed_payload,
+        )
+
     decision = HumanDecision(
         gate_kind=body.gate_kind,
         action=body.action,  # type: ignore[arg-type]
@@ -775,6 +786,41 @@ async def rollback_task(
     return RollbackOut(
         graph_run_id=fresh.graph_run_id, impact=impact.model_dump()
     )
+
+
+async def _context_pin_on_confirm(
+    request: Request,
+    *,
+    task_id: str,
+    workspace_id: str,
+    artifact_id: str,
+    artifact_kind: str,
+    payload: object,
+) -> None:
+    """confirm 成功后同步上下文层 pin / OUTLINE_DIGEST（best-effort）。"""
+    app_ctx = getattr(request.app.state, "app_ctx", None)
+    if app_ctx is None:
+        return
+    registry = getattr(app_ctx, "context_registry", None)
+    if registry is None:
+        return
+    store = registry.get_owner("task", task_id)
+    if store is None:
+        return
+    try:
+        from ..graph.control.context_t1 import on_await_human_confirmed
+
+        await on_await_human_confirmed(
+            store,
+            artifact_id=artifact_id,
+            artifact_kind=artifact_kind,
+            payload=payload,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "context pin on confirm failed",
+            extra={"task_id": task_id, "artifact_id": artifact_id},
+        )
 
 
 def _rollback_ctx(request: Request, task: TaskRow) -> TaskContext:
